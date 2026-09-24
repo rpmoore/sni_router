@@ -39,7 +39,7 @@ Defaults come from `RouterConfig`
    [hostname-matching](../routing/hostname-matching.md).
 3. **Upstream**, `upstream_timeout` (5s), one deadline covering DNS
    resolution, TCP connect, and replaying the buffered bytes
-   (`crates/sni_router/src/delivery/connection.rs:291`). A backend that
+   (`crates/sni_router/src/delivery/connection.rs:296`). A backend that
    accepts but never reads can't hold the connection past this deadline.
    DNS backends go through the router's resolver
    (`crates/sni_router/src/delivery/resolver.rs`):
@@ -72,6 +72,8 @@ Defaults come from `RouterConfig`
    `copy_buffer_size` (default 32 KiB) for the life of the connection. The
    idle watchdog (`crates/sni_router/src/delivery/proxy.rs:65`) closes the
    connection after `idle_timeout` with no bytes in *either* direction.
+   The idle clock restarts when proxying begins, so time spent on the
+   lookup and the upstream connect never counts as idle.
    The activity stamp (`crates/sni_router/src/delivery/metered.rs:41`)
    exists only when an idle timeout is set. With it disabled, the
    per-chunk path does no clock reads or atomics. An idle timeout too large to
@@ -79,8 +81,8 @@ Defaults come from `RouterConfig`
 
 Every await in stages 1–3 and the alert write races the shutdown token
 through `cancellable`
-(`crates/sni_router/src/delivery/connection.rs:274`). The alert write is
-capped at 1s (`crates/sni_router/src/delivery/connection.rs:322`).
+(`crates/sni_router/src/delivery/connection.rs:279`). The alert write is
+capped at 1s (`crates/sni_router/src/delivery/connection.rs:327`).
 
 # Outcomes
 

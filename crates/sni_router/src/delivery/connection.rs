@@ -249,6 +249,11 @@ async fn run(
     };
 
     let mut upstream = upstream;
+    // The idle clock measures the proxy stage only: restart it now, so time
+    // spent on the lookup and upstream connect doesn't count as idle.
+    if let Some(activity) = activity {
+        activity.touch();
+    }
     let end = proxy(
         client,
         &mut upstream,

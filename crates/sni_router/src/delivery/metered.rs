@@ -38,7 +38,8 @@ impl Activity {
         }
     }
 
-    fn touch(&self) {
+    /// Marks now as the last activity.
+    pub(super) fn touch(&self) {
         let millis = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
         // Only the connection's own task writes, so a plain store suffices;
         // the watchdog reads it from the same task.

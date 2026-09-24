@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -66,9 +68,11 @@ impl Router {
     /// 4. force-close whatever is left, then return once every connection
     ///    task has finished.
     ///
-    /// `max_connections` is shared across all listeners. A connection slot
-    /// is taken *before* `accept`, so under load new connections queue in the
-    /// kernel backlog instead of being accepted and starved.
+    /// `max_connections` is shared across all listeners. One accept loop
+    /// takes a connection slot *before* accepting, then accepts from
+    /// whichever listener is ready first, so under load new connections
+    /// queue in the kernel backlog instead of being accepted and starved, and
+    /// an idle listener never holds a slot another listener could use.
     pub async fn serve(
         &self,
         listeners: Vec<(TcpListener, ListenerInfo)>,
@@ -88,24 +92,24 @@ impl Router {
         let slots = Arc::new(Semaphore::new(self.config.max_connections));
         let tracker = TaskTracker::new();
 
-        let mut accept_loops = JoinSet::new();
-        for (listener, info) in listeners {
-            tracing::info!(address = %info.address(), network = info.network(), "sni_router listening");
-            accept_loops.spawn(accept_loop(
-                listener,
-                Arc::new(info),
-                Arc::clone(&shared),
-                Arc::clone(&slots),
-                tracker.clone(),
-                shutdown.clone(),
-            ));
-        }
+        let listeners: Vec<_> = listeners
+            .into_iter()
+            .map(|(listener, info)| {
+                tracing::info!(address = %info.address(), network = info.network(), "sni_router listening");
+                (listener, Arc::new(info))
+            })
+            .collect();
+        let accept_task = tokio::spawn(accept_loop(
+            listeners,
+            Arc::clone(&shared),
+            slots,
+            tracker.clone(),
+            shutdown.clone(),
+        ));
 
         shutdown.cancelled().await;
-        while let Some(result) = accept_loops.join_next().await {
-            if let Err(error) = result {
-                tracing::error!(%error, "accept loop panicked");
-            }
+        if let Err(error) = accept_task.await {
+            tracing::error!(%error, "accept loop panicked");
         }
 
         let proxying = shared.gate.close();
@@ -132,13 +136,13 @@ impl Router {
 }
 
 async fn accept_loop(
-    listener: TcpListener,
-    info: Arc<ListenerInfo>,
+    listeners: Vec<(TcpListener, Arc<ListenerInfo>)>,
     shared: Arc<Shared>,
     slots: Arc<Semaphore>,
     tracker: TaskTracker,
     shutdown: CancellationToken,
 ) {
+    let mut next = 0;
     loop {
         let slot = tokio::select! {
             biased;
@@ -148,21 +152,25 @@ async fn accept_loop(
                 Err(_closed) => return,
             },
         };
-        let accepted = tokio::select! {
+        let (index, accepted) = tokio::select! {
             biased;
             _ = shutdown.cancelled() => return,
-            accepted = listener.accept() => accepted,
+            accepted = accept_any(&listeners, &mut next) => accepted,
         };
+        let info = &listeners[index].1;
         match accepted {
             Ok((stream, peer)) => {
                 let shared = Arc::clone(&shared);
-                let info = Arc::clone(&info);
+                let info = Arc::clone(info);
                 tracker.spawn(async move {
                     let _slot = slot;
                     handle_connection(shared, stream, peer, info).await;
                 });
             }
             Err(error) => {
+                // Return the slot before backing off so repeated accept
+                // failures (e.g. EMFILE) don't also shrink capacity.
+                drop(slot);
                 tracing::warn!(%error, address = %info.address(), "accept failed");
                 tokio::select! {
                     _ = shutdown.cancelled() => return,
@@ -171,4 +179,23 @@ async fn accept_loop(
             }
         }
     }
+}
+
+/// Accepts from whichever listener is ready first. Polling starts at a
+/// rotating index so a busy listener can't starve the others.
+fn accept_any<'a>(
+    listeners: &'a [(TcpListener, Arc<ListenerInfo>)],
+    next: &'a mut usize,
+) -> impl Future<Output = (usize, io::Result<(TcpStream, SocketAddr)>)> + 'a {
+    std::future::poll_fn(move |cx| {
+        let count = listeners.len();
+        for offset in 0..count {
+            let index = (*next + offset) % count;
+            if let Poll::Ready(accepted) = listeners[index].0.poll_accept(cx) {
+                *next = (index + 1) % count;
+                return Poll::Ready((index, accepted));
+            }
+        }
+        Poll::Pending
+    })
 }

@@ -44,7 +44,7 @@ database-backed lookup; see [embedding](embedding.md).
 - **`routing`** — candidate keys and precedence (`resolve_route`,
   `crates/sni_router/src/routing/mod.rs:102`).
 - **`delivery`** — `Router::serve`, the per-connection pipeline, and
-  shutdown (`crates/sni_router/src/delivery/server.rs:72`).
+  shutdown (`crates/sni_router/src/delivery/server.rs:76`).
 - **`cache`** — the optional `CachedLookup` decorator
   (`crates/sni_router/src/cache.rs:90`).
 - **`metrics`** — typed `MetricEvent`s and the `MetricsSink` trait
@@ -55,7 +55,7 @@ database-backed lookup; see [embedding](embedding.md).
 # A connection, end to end
 
 1. The accept loop takes a connection slot, then accepts
-   (`crates/sni_router/src/delivery/server.rs:134`).
+   (`crates/sni_router/src/delivery/server.rs:138`).
 2. The ClientHello is read under one overall deadline and parsed
    (`crates/sni_router/src/delivery/connection.rs:158`).
 3. The SNI is resolved with one lookup call: exact key, then wildcard
@@ -67,7 +67,7 @@ database-backed lookup; see [embedding](embedding.md).
 5. The connection commits to the proxy stage through the shutdown gate
    (`crates/sni_router/src/delivery/connection.rs:247`), then bytes are
    spliced both ways with half-close propagation until done
-   (`crates/sni_router/src/delivery/connection.rs:252`).
+   (`crates/sni_router/src/delivery/connection.rs:257`).
 6. Exactly one `ConnectionClosed` event and one log line are emitted
    (`crates/sni_router/src/delivery/connection.rs:115`).
 

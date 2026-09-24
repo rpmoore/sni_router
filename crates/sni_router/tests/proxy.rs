@@ -517,6 +517,58 @@ async fn small_copy_buffers_still_proxy_everything() {
     harness.stop().await;
 }
 
+#[tokio::test]
+async fn idle_listener_does_not_hold_the_only_slot() {
+    // One slot, two listeners: the old per-listener accept loops let an idle
+    // listener park holding the slot, so the other listener never accepted.
+    let backend = Backend::start(BackendMode::Echo).await;
+    let mut config = fast_config();
+    config.max_connections = 1;
+    let harness =
+        Harness::start_with_listeners(lookup(&[("two.test", &backend.route())]), config, 2).await;
+    // Visit the listeners in an order that ends up asking a listener whose
+    // old per-listener loop was not the one holding the slot.
+    let order = [
+        harness.addrs[1],
+        harness.addrs[0],
+        harness.addrs[1],
+        harness.addrs[0],
+    ];
+    for addr in order {
+        let wire = hello("two.test");
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(&wire).await.unwrap();
+        assert_eq!(read_exact(&mut client, wire.len()).await, wire);
+        drop(client);
+    }
+    harness.outcomes(4).await;
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn idle_timer_starts_when_proxying_begins() {
+    // A lookup slower than the idle timeout must not make the freshly
+    // proxied connection look idle.
+    let backend = Backend::start(BackendMode::Echo).await;
+    let mut config = fast_config();
+    config.idle_timeout = Some(Duration::from_millis(300));
+    let scripted = Arc::new(ScriptedLookup::new(LookupBehavior::Delayed(
+        Duration::from_millis(600),
+        route_table(&[("slowlookup.test", &backend.route())]),
+    )));
+    let harness = Harness::start(scripted, config).await;
+    let wire = hello("slowlookup.test");
+    let mut client = harness.connect().await;
+    client.write_all(&wire).await.unwrap();
+    assert_eq!(read_exact(&mut client, wire.len()).await, wire);
+    client.write_all(b"ping").await.unwrap();
+    assert_eq!(read_exact(&mut client, 4).await, b"ping");
+    // Then it does idle out after a full idle interval of silence.
+    read_to_close(&mut client).await;
+    assert_eq!(harness.outcomes(1).await, [ConnectionOutcome::IdleTimeout]);
+    harness.stop().await;
+}
+
 // --- shutdown ---
 
 #[tokio::test]
