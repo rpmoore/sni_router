@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux binary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch (installs current stable Rust)
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Verify release tag matches Cargo.toml version
+        run: |
+          cargo_version="$(cargo metadata --no-deps --format-version=1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          if [ "$RELEASE_TAG" != "v$cargo_version" ]; then
+            echo "::error::release tag '$RELEASE_TAG' does not match Cargo.toml version 'v$cargo_version' — bump Cargo.toml and merge before tagging"
+            exit 1
+          fi
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package binary
+        run: tar czf "sni_router-${RELEASE_TAG}-linux-x86_64.tar.gz" -C target/release sni_router
+
+      - name: Checksum tarball
+        run: sha256sum "sni_router-${RELEASE_TAG}-linux-x86_64.tar.gz" > "sni_router-${RELEASE_TAG}-linux-x86_64.tar.gz.sha256"
+
+      - name: Upload release asset and generate changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" "sni_router-${RELEASE_TAG}-linux-x86_64.tar.gz" "sni_router-${RELEASE_TAG}-linux-x86_64.tar.gz.sha256" --clobber
+          notes="$(gh api repos/${{ github.repository }}/releases/generate-notes -f tag_name="$RELEASE_TAG" --jq .body)"
+          gh release edit "$RELEASE_TAG" --notes "$notes"
