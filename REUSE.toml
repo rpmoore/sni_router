@@ -1,0 +1,30 @@
+version = 1
+
+[[annotations]]
+path = [
+    ".agents/**",
+    ".claude/settings.json",
+    ".claude/skills/**",
+    ".github/**",
+    ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "LICENSE",
+    ".dockerignore",
+    "Dockerfile",
+    "README.md",
+    "RUST.md",
+    "deny.toml",
+    "crates/**",
+    "docs/**",
+    "examples/**",
+    "justfile",
+    "scripts/**",
+    "skills-lock.json",
+    "tests/**",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Ryan Moore"
+SPDX-License-Identifier = "Apache-2.0"
