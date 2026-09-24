@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 Ryan Moore
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example sni_router config. Point SNI_ROUTER_CONFIG at a copy of this file.
+# Every [server] and [admin] key is optional; the values below are the
+# defaults except where noted. Send SIGHUP to reload [[routes]]; changes to
+# [server] or [admin] need a restart.
+
+[server]
+# Data-plane listeners (TLS passthrough).
+listen = ["0.0.0.0:8080"]
+# Connections handled at once across all listeners; more wait in the backlog.
+max_connections = 10000
+# One deadline for the whole ClientHello to arrive.
+client_hello_timeout_ms = 5000
+lookup_timeout_ms = 2000
+# One deadline covering DNS, TCP connect, and replaying the ClientHello.
+upstream_timeout_ms = 5000
+# Close proxied connections with no traffic in either direction for this
+# long; 0 disables. Without it, idle sessions to any routed host can hold
+# every connection slot indefinitely. (Default: 1800 = 30 minutes.)
+idle_timeout_secs = 1800
+# How long proxied connections may drain after SIGTERM before being closed.
+shutdown_grace_secs = 30
+# Largest ClientHello accepted, and most TLS records it may span.
+max_client_hello_bytes = 32768
+max_client_hello_records = 32
+# DNS backends: reuse resolved addresses this long (0 = resolve per
+# connection), and cap concurrent system lookups (each holds a blocking
+# thread until it returns, even after its connection gives up).
+dns_cache_ttl_secs = 30
+max_concurrent_dns_lookups = 64
+# Each proxied connection holds two copy buffers of this size for its whole
+# life. Busy connections cost up to 2 × copy_buffer_bytes; idle ones much
+# less (untouched pages aren't resident). One connection's throughput was
+# ~0.8 GiB/s at 8 KiB and levelled off at ~2.5 GiB/s from 32 KiB. Handshake-
+# phase memory is bounded by max_connections × max_client_hello_bytes.
+copy_buffer_bytes = 32768
+
+[admin]
+# GET /metrics (Prometheus) and GET <health_path> (200, or 503 once draining).
+# Unauthenticated: keep it off public interfaces. For Kubernetes probes (the
+# kubelet connects to the pod IP), set listen = "0.0.0.0:8081" and restrict
+# the port with a NetworkPolicy.
+listen = "127.0.0.1:8081"
+health_path = "/health"
+
+# Exact hostnames win over wildcards. A wildcard covers exactly one label:
+# "*.apps.example.com" matches "web.apps.example.com" but not
+# "apps.example.com" or "a.web.apps.example.com". Hostnames are
+# case-insensitive. Connections with no matching route (or no SNI) get a TLS
+# unrecognized_name alert.
+[[routes]]
+hostname = "api.example.com"
+backend = "api-svc.default.svc.cluster.local:8443"
+
+[[routes]]
+hostname = "*.apps.example.com"
+backend = "10.0.0.5:443"
+
+[[routes]]
+hostname = "v6.example.com"
+backend = "[2001:db8::10]:443"

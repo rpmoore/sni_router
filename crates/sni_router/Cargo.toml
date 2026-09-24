@@ -1,0 +1,21 @@
+[package]
+name = "sni_router"
+description = "Library for routing TLS connections to backends by SNI without terminating TLS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Exposes `sni_router::testing` (ClientHello builder, recording metrics sink,
+# scripted lookups) for embedders' own tests.
+test-util = []
+
+[dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "sync", "macros"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "rt-multi-thread", "sync", "macros", "test-util"] }
+sni_router = { path = ".", features = ["test-util"] }
