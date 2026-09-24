@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/sni_router", "crates/sni_router_app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96.1"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+sni_router = { path = "crates/sni_router", version = "0.1.0" }
+tokio = { version = "1.53", default-features = false }
+tokio-util = { version = "0.7.19", default-features = false }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.6"
+opentelemetry = { version = "0.33.0", default-features = false, features = ["metrics"] }
+opentelemetry_sdk = { version = "0.33.0", default-features = false, features = ["metrics"] }
+opentelemetry-prometheus = "0.33.0"
+prometheus = "0.14.0"
+hyper = { version = "1.11", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+bytes = "1.12"
