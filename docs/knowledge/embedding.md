@@ -52,15 +52,21 @@ For any deployment, whether of the app or your own embedding:
   defaults to 8080), and the admin listener for health and metrics.
 - [ ] **Health:** point liveness and readiness probes at the health path.
   It returns 503 once shutdown starts, so load balancers drain first. Set
-  the shutdown grace period to fit your longest acceptable drain.
+  the shutdown grace period (`shutdown_grace_secs` in the app,
+  `RouterConfig::shutdown_grace` when embedding) to fit your longest
+  acceptable drain.
 - [ ] **Admin exposure:** the admin port is unauthenticated. Keep it on
   loopback or a private interface; for Kubernetes probes, restrict it with a
   NetworkPolicy.
 - [ ] **Route data:** every route needs an explicit backend `host:port`.
   Wildcards are stored as literal `*.example.com` keys.
-- [ ] **Limits:** size `max_connections`, `copy_buffer_size` and
-  `idle_timeout` for your traffic, using the memory sizing in
-  [connection-lifecycle](delivery/connection-lifecycle.md). Put per-client
+- [ ] **Limits:** size the connection limit, copy buffer, and idle timeout
+  for your traffic, using the memory sizing in
+  [connection-lifecycle](delivery/connection-lifecycle.md). In the app's
+  TOML these are `[server]` `max_connections`, `copy_buffer_bytes`, and
+  `idle_timeout_secs`. When embedding, they are the `RouterConfig` fields
+  `max_connections`, `copy_buffer_size`, and `idle_timeout`. See
+  [TOML config](app/toml-config.md) for the full mapping. Put per-client
   connection limits in front of the router if clients are untrusted.
 - [ ] **Metrics:** map `MetricEvent`s to your own names, or reuse the
   app's (see [metrics](observability/metrics.md)).

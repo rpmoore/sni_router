@@ -30,8 +30,8 @@
 * **Update**: After the second review round (measured performance review,
   Codex security review):
   * the default copy buffer is now 32 KiB, the measured throughput knee
-  * `idle_timeout` now defaults to 30 minutes (configurable, 0 disables),
-    so idle sessions can't exhaust connection slots
+  * `idle_timeout` now defaults to 30 minutes (app: `idle_timeout_secs`,
+    where 0 disables it), so idle sessions can't exhaust connection slots
   * `CachedLookup::invalidate` uses a reverse index
   * the example admin listener is on loopback
   * CI actions and Docker base images are pinned by SHA/digest, with
