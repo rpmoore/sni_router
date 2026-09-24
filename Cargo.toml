@@ -10,17 +10,17 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 sni_router = { path = "crates/sni_router", version = "0.1.0" }
-tokio = { version = "1.47", default-features = false }
-tokio-util = { version = "0.7", default-features = false }
+tokio = { version = "1.53", default-features = false }
+tokio-util = { version = "0.7.19", default-features = false }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
-serde = { version = "1", features = ["derive"] }
-toml = "1.1"
-opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }
-opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["metrics"] }
-opentelemetry-prometheus = "0.32"
-prometheus = "0.14"
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
-bytes = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.6"
+opentelemetry = { version = "0.33.0", default-features = false, features = ["metrics"] }
+opentelemetry_sdk = { version = "0.33.0", default-features = false, features = ["metrics"] }
+opentelemetry-prometheus = "0.33.0"
+prometheus = "0.14.0"
+hyper = { version = "1.11", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+bytes = "1.12"
