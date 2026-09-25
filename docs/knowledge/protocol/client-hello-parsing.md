@@ -84,17 +84,20 @@ uses a bounds-checked `Reader`: no indexing and no `unsafe`. It walks:
 Trailing bytes are rejected. The client random and session ID are never
 returned, so they can't reach logs.
 
-Extensions (`crates/sni_router/src/protocol/hello.rs:75`):
+Extensions (`crates/sni_router/src/protocol/hello.rs:125`):
 
 - Duplicate extension types are rejected. Detection is sort-then-scan,
   O(n log n) even for a hello packed with thousands of empty extensions
-  (`crates/sni_router/src/protocol/hello.rs:97`). The type list is
-  preallocated to `extensions.len() / 4` (the max possible count, since
-  every extension is at least 4 bytes), so this costs one allocation, not
-  a realloc per growth step.
-- `server_name` (`crates/sni_router/src/protocol/hello.rs:104`): the list
+  (`crates/sni_router/src/protocol/hello.rs:144`). Seen types are tracked
+  in `SeenTypes` (`crates/sni_router/src/protocol/hello.rs:85`), which
+  holds up to 32 types inline on the stack before spilling to a heap
+  `Vec`. Sized by extension *count*, not by the extensions block's byte
+  length: a single large extension (e.g. `padding`) can dominate the byte
+  count while adding only one type, so a byte-length-derived capacity
+  would over-allocate on sparse untrusted input.
+- `server_name` (`crates/sni_router/src/protocol/hello.rs:151`): the list
   must be non-empty with no empty names. More than one `host_name` is an
-  error (`crates/sni_router/src/protocol/hello.rs:133`). Non-`host_name`
+  error (`crates/sni_router/src/protocol/hello.rs:180`). Non-`host_name`
   entries are skipped. A list without a `host_name` means no SNI.
 
 **ECH:** with Encrypted Client Hello, the router routes on the outer

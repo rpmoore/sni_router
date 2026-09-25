@@ -36,10 +36,14 @@
   * the example admin listener is on loopback
   * CI actions and Docker base images are pinned by SHA/digest, with
     Dependabot updates
-* **Update**: After a ClientHello-parsing allocation review: extension-type
-  tracking is preallocated (one alloc, not a realloc per growth step), and
-  record payload ranges are stack-inline for up to 4 records before
-  spilling to a heap `Vec`, so `scan_records` — rerun from byte 0 on every
-  read-loop iteration for an incomplete hello — doesn't allocate at all in
-  the common single/few-record case. See
+* **Update**: After a ClientHello-parsing allocation review: extension
+  types seen so far are stack-inline for up to 32 types (sized by count,
+  not by the extensions block's byte length, since one large extension
+  like `padding` would otherwise force a large allocation on sparse
+  untrusted input — a correction after PR review flagged the first,
+  byte-length-derived version), and record payload ranges are
+  stack-inline for up to 4 records, both before spilling to a heap `Vec`.
+  `scan_records` — rerun from byte 0 on every read-loop iteration for an
+  incomplete hello — doesn't allocate at all in the common
+  single/few-record, well-under-32-extensions case. See
   [ClientHello parsing](protocol/client-hello-parsing.md).
