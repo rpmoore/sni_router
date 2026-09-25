@@ -19,25 +19,29 @@ or a `ParseError`. `Incomplete` means "read more".
 # Records and reassembly
 
 A ClientHello can span several TLS records.
-`scan_records` (`crates/sni_router/src/protocol/record.rs:67`) walks the
+`scan_records` (`crates/sni_router/src/protocol/record.rs:122`) walks the
 record headers:
 
 - Each record must be a handshake record (`0x16`) with legacy major
   version 3 and a payload of 1..=16384 bytes
-  (`crates/sni_router/src/protocol/record.rs:108`).
+  (`crates/sni_router/src/protocol/record.rs:163`).
 - Garbage is rejected on the **first byte**, before five have arrived
-  (`crates/sni_router/src/protocol/record.rs:119`). A non-handshake first
+  (`crates/sni_router/src/protocol/record.rs:174`). A non-handshake first
   byte is `NotHandshake`. A bad record later is `InvalidRecord`.
 - The 4-byte handshake header can itself be split across records.
-  `HandshakeHeader::observe` (`crates/sni_router/src/protocol/record.rs:145`)
+  `HandshakeHeader::observe` (`crates/sni_router/src/protocol/record.rs:203`)
   checks the message type (must be ClientHello) as soon as its byte is
   visible.
 
 `scan_records` touches only headers, so re-checking a growing buffer
 after every read costs O(records), not O(bytes). A client dripping one
-byte per TCP segment can't make the read loop quadratic. Payloads are
-copied into one message only once the hello is complete, and only when it
-was fragmented. The single-record case parses in place.
+byte per TCP segment can't make the read loop quadratic. Payload ranges
+are tracked in `Payloads` (`crates/sni_router/src/protocol/record.rs:72`),
+which holds up to 4 ranges inline on the stack — covering every
+legitimately-fragmented hello — before spilling to a heap `Vec` for
+anything more fragmented than that. Payloads are copied into one message
+only once the hello is complete, and only when it was fragmented. The
+single-record case parses in place.
 
 # Limits
 
@@ -50,7 +54,7 @@ independent bounds:
    `TooLarge` as soon as the 4 header bytes are visible, before any of
    the body is buffered.
 3. **Record count:** at most `max_records` (default 32,
-   `crates/sni_router/src/protocol/record.rs:80`). This stops a flood of
+   `crates/sni_router/src/protocol/record.rs:135`). This stops a flood of
    1-byte records from turning header overhead into unbounded work.
 
 These combine into `max_wire_bytes()`
@@ -84,10 +88,13 @@ Extensions (`crates/sni_router/src/protocol/hello.rs:75`):
 
 - Duplicate extension types are rejected. Detection is sort-then-scan,
   O(n log n) even for a hello packed with thousands of empty extensions
-  (`crates/sni_router/src/protocol/hello.rs:93`).
-- `server_name` (`crates/sni_router/src/protocol/hello.rs:100`): the list
+  (`crates/sni_router/src/protocol/hello.rs:97`). The type list is
+  preallocated to `extensions.len() / 4` (the max possible count, since
+  every extension is at least 4 bytes), so this costs one allocation, not
+  a realloc per growth step.
+- `server_name` (`crates/sni_router/src/protocol/hello.rs:104`): the list
   must be non-empty with no empty names. More than one `host_name` is an
-  error (`crates/sni_router/src/protocol/hello.rs:129`). Non-`host_name`
+  error (`crates/sni_router/src/protocol/hello.rs:133`). Non-`host_name`
   entries are skipped. A list without a `host_name` means no SNI.
 
 **ECH:** with Encrypted Client Hello, the router routes on the outer
