@@ -49,7 +49,11 @@ impl InMemoryLookup {
     pub fn hits(&self, candidates: &RouteCandidates) -> RouteHits {
         candidates
             .keys()
-            .filter_map(|key| Some((key.clone(), self.routes.get(key)?.clone())))
+            .filter_map(|key| {
+                self.routes
+                    .get(key)
+                    .map(|backend| (key.clone(), backend.clone()))
+            })
             .collect()
     }
 }

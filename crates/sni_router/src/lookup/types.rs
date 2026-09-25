@@ -147,8 +147,11 @@ impl RouteKey {
         if !parent.contains('.') {
             return None;
         }
+        let mut text = String::with_capacity(WILDCARD_PREFIX.len() + parent.len());
+        text.push_str(WILDCARD_PREFIX);
+        text.push_str(parent);
         Some(Self {
-            text: format!("{WILDCARD_PREFIX}{parent}").into_boxed_str(),
+            text: text.into_boxed_str(),
             wildcard: true,
         })
     }
