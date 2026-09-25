@@ -74,7 +74,11 @@ pub(super) fn parse_client_hello_body(body: &[u8]) -> Result<Option<Hostname>, P
 
 fn parse_extensions(extensions: &[u8]) -> Result<Option<Hostname>, ParseError> {
     let mut reader = Reader::new(extensions);
-    let mut seen_types = Vec::new();
+    // Each extension is at least 4 bytes (2-byte type + 2-byte length), so
+    // this bounds capacity exactly and avoids the realloc-as-you-go cost of
+    // `Vec::new()` for every hello with more than 4 extensions (real clients
+    // routinely send 15+).
+    let mut seen_types = Vec::with_capacity(extensions.len() / 4);
     let mut sni = None;
     while !reader.is_empty() {
         let extension_type = reader
