@@ -56,9 +56,64 @@ pub fn parse_client_hello(buf: &[u8], limits: &HelloLimits) -> Result<ClientHell
 
 /// Where a complete ClientHello's handshake bytes sit in the wire buffer.
 struct RecordLayout {
-    payloads: Vec<std::ops::Range<usize>>,
+    payloads: Payloads,
     handshake_len: usize,
     consumed: usize,
+}
+
+/// A well-formed ClientHello almost always arrives in 1-2 TLS records; only
+/// a hostile sender fragments it further (bounded by `HelloLimits::max_records`,
+/// default 32). Payload ranges live inline on the stack until more than
+/// `INLINE_RECORDS` records are seen, so `scan_records` — rerun from byte 0
+/// on every read-loop iteration while a hello is still incomplete — doesn't
+/// pay a heap allocation per call in the common case.
+const INLINE_RECORDS: usize = 4;
+
+enum Payloads {
+    Inline {
+        ranges: [std::ops::Range<usize>; INLINE_RECORDS],
+        len: usize,
+    },
+    Heap(Vec<std::ops::Range<usize>>),
+}
+
+impl Payloads {
+    fn new() -> Self {
+        Self::Inline {
+            ranges: std::array::from_fn(|_| 0..0),
+            len: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Inline { len, .. } => *len,
+            Self::Heap(heap) => heap.len(),
+        }
+    }
+
+    fn push(&mut self, range: std::ops::Range<usize>) {
+        match self {
+            Self::Inline { ranges, len } if *len < INLINE_RECORDS => {
+                ranges[*len] = range;
+                *len += 1;
+            }
+            Self::Inline { ranges, len } => {
+                let mut heap = Vec::with_capacity(*len + 1);
+                heap.extend(ranges[..*len].iter().cloned());
+                heap.push(range);
+                *self = Self::Heap(heap);
+            }
+            Self::Heap(heap) => heap.push(range),
+        }
+    }
+
+    fn as_slice(&self) -> &[std::ops::Range<usize>] {
+        match self {
+            Self::Inline { ranges, len } => &ranges[..*len],
+            Self::Heap(heap) => heap.as_slice(),
+        }
+    }
 }
 
 /// Walks record headers without copying payloads, so re-checking a growing
@@ -66,7 +121,7 @@ struct RecordLayout {
 /// trickling one byte per segment can't turn the read loop quadratic.
 fn scan_records(buf: &[u8], limits: &HelloLimits) -> Result<RecordLayout, ParseError> {
     let mut offset = 0;
-    let mut payloads = Vec::new();
+    let mut payloads = Payloads::new();
     let mut header = HandshakeHeader::default();
     let mut payload_total = 0;
 

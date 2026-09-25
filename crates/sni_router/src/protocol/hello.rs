@@ -72,9 +72,59 @@ pub(super) fn parse_client_hello_body(body: &[u8]) -> Result<Option<Hostname>, P
     parse_extensions(extensions)
 }
 
+/// Extension types seen so far, for duplicate detection. Sized by *count*,
+/// not by the extensions block's byte length: a single large extension
+/// (e.g. `padding`, which real clients routinely send to dodge
+/// TLS-intolerant middleboxes) can dominate the byte count while adding
+/// only one type, so a byte-length-derived capacity would over-allocate.
+/// Real ClientHellos (Chrome/Firefox, including GREASE) send well under
+/// `INLINE_EXTENSIONS` distinct extensions, so this stays on the stack;
+/// only a hello packed with more spills to the heap.
+const INLINE_EXTENSIONS: usize = 32;
+
+enum SeenTypes {
+    Inline {
+        types: [u16; INLINE_EXTENSIONS],
+        len: usize,
+    },
+    Heap(Vec<u16>),
+}
+
+impl SeenTypes {
+    fn new() -> Self {
+        Self::Inline {
+            types: [0; INLINE_EXTENSIONS],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, value: u16) {
+        match self {
+            Self::Inline { types, len } if *len < INLINE_EXTENSIONS => {
+                types[*len] = value;
+                *len += 1;
+            }
+            Self::Inline { types, len } => {
+                let mut heap = Vec::with_capacity(*len + 1);
+                heap.extend_from_slice(&types[..*len]);
+                heap.push(value);
+                *self = Self::Heap(heap);
+            }
+            Self::Heap(heap) => heap.push(value),
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u16] {
+        match self {
+            Self::Inline { types, len } => &mut types[..*len],
+            Self::Heap(heap) => heap.as_mut_slice(),
+        }
+    }
+}
+
 fn parse_extensions(extensions: &[u8]) -> Result<Option<Hostname>, ParseError> {
     let mut reader = Reader::new(extensions);
-    let mut seen_types = Vec::new();
+    let mut seen_types = SeenTypes::new();
     let mut sni = None;
     while !reader.is_empty() {
         let extension_type = reader
@@ -90,6 +140,7 @@ fn parse_extensions(extensions: &[u8]) -> Result<Option<Hostname>, ParseError> {
     }
     // Sort-then-scan keeps duplicate detection O(n log n) even for a
     // hostile hello packed with thousands of empty extensions.
+    let seen_types = seen_types.as_mut_slice();
     seen_types.sort_unstable();
     if seen_types.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(ParseError::Malformed("duplicate extension type"));
@@ -203,6 +254,31 @@ mod tests {
                     .extension(0x000a, &[0, 2, 0, 0x1d])
                     .extension(0x000a, &[0, 2, 0, 0x17])
             ),
+            Err(ParseError::Malformed("duplicate extension type"))
+        );
+    }
+
+    #[test]
+    fn more_extensions_than_inline_capacity_still_parse() {
+        let mut builder = ClientHelloBuilder::new().sni("many.test");
+        for extension_type in 100..140u16 {
+            builder = builder.extension(extension_type, &[]);
+        }
+        assert_eq!(parse(builder), Ok(Some("many.test".to_owned())));
+    }
+
+    #[test]
+    fn duplicate_beyond_inline_capacity_is_rejected() {
+        let mut builder = ClientHelloBuilder::new().sni("many.test");
+        for extension_type in 100..140u16 {
+            builder = builder.extension(extension_type, &[]);
+        }
+        // The duplicate of the first (inline-stored) extension type arrives
+        // after the inline/heap spill, so detection must be correct across
+        // the two storage modes.
+        builder = builder.extension(100, &[]);
+        assert_eq!(
+            parse(builder),
             Err(ParseError::Malformed("duplicate extension type"))
         );
     }
