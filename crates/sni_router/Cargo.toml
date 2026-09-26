@@ -16,6 +16,14 @@ tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "sync", 
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only for the `splice(2)`/`pipe2(2)` fast path in delivery::splice.
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "io-util", "time", "rt", "rt-multi-thread", "sync", "macros", "test-util"] }
 sni_router = { path = ".", features = ["test-util"] }
+
+[[example]]
+name = "copy_benchmark"
+required-features = ["test-util"]

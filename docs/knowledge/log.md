@@ -47,3 +47,31 @@
   incomplete hello — doesn't allocate at all in the common
   single/few-record, well-under-32-extensions case. See
   [ClientHello parsing](protocol/client-hello-parsing.md).
+* **Update**: Proxy stage now uses `splice(2)` through an in-kernel pipe on
+  Linux when the syscall probes as usable, so payload bytes never cross
+  into a userspace buffer; falls back to
+  `tokio::io::copy_bidirectional_with_sizes` elsewhere, if the probe fails
+  (e.g. seccomp), or if `SNI_ROUTER_DISABLE_SPLICE` is set. Measured
+  ~1.3–1.7× the userspace copy's loopback throughput
+  (`examples/copy_benchmark.rs`, kept in-tree for re-measuring). After
+  adversarial review: both directions' pipes are now built up front, before
+  either socket is touched, so a setup failure (fd exhaustion) falls back
+  instead of failing the connection; and client-read accounting moved to
+  the read side (matching `MeteredStream`), since counting it only after
+  the write to upstream succeeded under-counted bytes the client had
+  already sent when upstream stalled or reset. A second review round found
+  that admitting every connection to splice regardless of fd pressure could
+  still exhaust descriptors before any one connection's own `prepare()`
+  call failed (starving accept/connect instead). Fixed with a per-`Router`
+  fd budget (a semaphore sized once from `RLIMIT_NOFILE` and
+  `max_connections`): splice only runs while the budget has room. A third
+  review round then found that budget was computed independently per
+  `Router::serve` call from the *whole* process's `RLIMIT_NOFILE`, so two
+  concurrent `Router`s (a supported embedding scenario) would each admit up
+  to their own full share and together double-count the same fd limit.
+  Fixed by making it one semaphore for the whole process
+  (`splice::admission`, not keyed to any `Router`'s `max_connections`):
+  splice may use at most half of `RLIMIT_NOFILE`, in units of 4 fds (one
+  connection's two pipes), leaving the other half always available for
+  sockets, listeners, and anything else in the process. See
+  [connection lifecycle](delivery/connection-lifecycle.md).
