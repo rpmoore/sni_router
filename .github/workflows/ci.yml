@@ -83,3 +83,28 @@ jobs:
         run: |
           docker run --rm -v "$PWD/docs/knowledge":/data:ro \
             rpmoore/okf-lint@sha256:5d653a1fc2bd6d007cfc181205de9fc1d1acd6874360b53688cbc4a7fc9da333 /data
+
+  loadtest-smoke:
+    name: Load test smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch (installs current stable Rust)
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install just
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: just
+
+      - name: Run load test smoke
+        run: just loadtest-smoke
