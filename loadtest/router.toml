@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Ryan Moore
+# SPDX-License-Identifier: Apache-2.0
+#
+# sni_router config for `just loadtest*` (see Justfile). Dedicated ports so
+# this never collides with a real deployment on the same machine. Routes
+# point at the two `load_backend` instances the Justfile starts alongside
+# this router.
+
+[server]
+listen = ["127.0.0.1:18080"]
+max_connections = 10000
+
+[admin]
+listen = "127.0.0.1:18081"
+health_path = "/health"
+
+[[routes]]
+hostname = "small.test"
+backend = "127.0.0.1:19101"
+
+[[routes]]
+hostname = "large.test"
+backend = "127.0.0.1:19102"
