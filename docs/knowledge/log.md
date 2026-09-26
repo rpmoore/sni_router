@@ -86,8 +86,14 @@
   both flags; (3) `copy_benchmark.rs`'s `unsafe { std::env::set_var(..) }`
   justified itself by "no other task has started," which doesn't establish
   thread-safety (the hazard is concurrent *threads*, not tasks) — fixed by
-  running that example on a current-thread runtime, where the claim is
-  actually true. A fourth review comment (claiming a semaphore permit
+  running each case on its own multi-thread runtime and fully dropping it
+  before mutating the env var, rather than forcing the whole benchmark
+  onto a current-thread runtime (which would have hidden splice's real
+  advantage, since the benchmark's own client/backend loops would lose
+  their parallelism too); dropping a multi-thread `Runtime` blocks until
+  every worker thread it spawned has exited (confirmed empirically via
+  `/proc/self/task` thread counts), so the gap between cases is genuinely
+  single-threaded. A fourth review comment (claiming a semaphore permit
   could drop before its splice `.await` completes) was investigated and
   confirmed to be a false positive — Rust drops owned values at the end of
   their lexical scope regardless of whether they're referenced again, not
