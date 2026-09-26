@@ -43,26 +43,39 @@ use tokio_util::sync::CancellationToken;
 const PAYLOAD_BYTES: usize = 512 * 1024 * 1024;
 const WRITE_CHUNK: usize = 256 * 1024;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     println!(
         "payload: {} MiB per run, default copy_buffer_size\n",
         PAYLOAD_BYTES / (1024 * 1024)
     );
-    run_case("default (splice on Linux, else the portable copy)").await;
+    run_case("default (splice on Linux, else the portable copy)");
 
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: no other task has started yet, so nothing else can be
-        // racing this read/write of the process environment.
+        // SAFETY: `run_case` above built and dropped its own multi-thread
+        // runtime; dropping a `tokio::runtime::Runtime` blocks until every
+        // worker thread it spawned has exited, so no other OS thread
+        // exists at this point to race this read/write of the process
+        // environment (the actual hazard `set_var`/`remove_var` guard
+        // against — concurrent *threads*, not concurrent async tasks).
         unsafe { std::env::set_var("SNI_ROUTER_DISABLE_SPLICE", "1") };
-        run_case("portable copy (splice disabled)").await;
+        run_case("portable copy (splice disabled)");
         unsafe { std::env::remove_var("SNI_ROUTER_DISABLE_SPLICE") };
     }
 }
 
-async fn run_case(label: &str) {
-    let elapsed = time_one_transfer().await;
+/// Builds a fresh multi-thread runtime, runs one transfer to completion on
+/// it, and drops the runtime again before returning — so the caller can
+/// safely mutate the environment between calls (see the `SAFETY` comment
+/// in `main`).
+fn run_case(label: &str) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build the tokio runtime");
+    let elapsed = runtime.block_on(time_one_transfer());
+    drop(runtime);
+
     let gib = PAYLOAD_BYTES as f64 / (1024.0 * 1024.0 * 1024.0);
     println!(
         "{label}: {:.2} GiB/s ({:.3}s)",

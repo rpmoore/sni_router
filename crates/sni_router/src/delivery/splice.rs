@@ -16,7 +16,8 @@
 //! through an in-kernel pipe, so payload never crosses into a userspace
 //! buffer the way `tokio::io::copy_bidirectional` requires. `proxy.rs`
 //! falls back to the userspace copy when [`available`] is false or
-//! [`Admission::try_acquire`] finds the fd budget exhausted.
+//! [`Admission::try_acquire`] finds the fd budget exhausted (tunable via
+//! `SNI_ROUTER_MAX_SPLICE_CONNECTIONS`, see [`admission_capacity`]).
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -66,13 +67,17 @@ fn try_probe() -> io::Result<bool> {
     Ok(moved == 1)
 }
 
-/// A fresh anonymous pipe as a pair of owned, close-on-exec file
-/// descriptors.
+/// A fresh anonymous pipe as a pair of owned, non-blocking, close-on-exec
+/// file descriptors. Non-blocking matters: `splice_raw` always passes
+/// `SPLICE_F_NONBLOCK`, which per `splice(2)` only avoids blocking on the
+/// *pipe* itself if the pipe end is `O_NONBLOCK` — without it, a splice
+/// call that would otherwise return `EAGAIN` can instead block the whole
+/// executor thread.
 fn raw_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0i32; 2];
     // SAFETY: `fds` has room for exactly the two file descriptors `pipe2`
     // writes on success.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK | libc::O_CLOEXEC) } != 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `pipe2` just returned these as fresh, open, uniquely-owned
@@ -153,8 +158,12 @@ pub(super) struct Admission {
 impl Admission {
     fn new() -> Self {
         let limit = nofile_soft_limit().unwrap_or(0);
+        let override_value = std::env::var("SNI_ROUTER_MAX_SPLICE_CONNECTIONS").ok();
         Self {
-            permits: Arc::new(Semaphore::new(splice_permits(limit))),
+            permits: Arc::new(Semaphore::new(admission_capacity(
+                override_value.as_deref(),
+                limit,
+            ))),
         }
     }
 
@@ -162,6 +171,22 @@ impl Admission {
     /// is exhausted — the caller should use the portable copy instead.
     pub(super) fn try_acquire(&self) -> Option<OwnedSemaphorePermit> {
         Arc::clone(&self.permits).try_acquire_owned().ok()
+    }
+}
+
+/// `SNI_ROUTER_MAX_SPLICE_CONNECTIONS`, if set to a valid number, replaces
+/// the `RLIMIT_NOFILE`-derived heuristic outright. The heuristic only
+/// knows the process's fd *limit*, not how much of it is already spoken
+/// for elsewhere — an embedder holding a large, fixed share of the
+/// process's fds in its own database pool, listeners, or files (this
+/// library is meant to be embedded) may need a smaller, explicit budget
+/// than half the limit would give it. `0` disables splice entirely, like
+/// `SNI_ROUTER_DISABLE_SPLICE`, but scoped to this budget specifically. An
+/// unset or unparseable value falls back to the heuristic.
+fn admission_capacity(override_value: Option<&str>, nofile_limit: usize) -> usize {
+    match override_value.and_then(|value| value.parse().ok()) {
+        Some(permits) => permits,
+        None => splice_permits(nofile_limit),
     }
 }
 
@@ -343,6 +368,25 @@ mod tests {
     #[test]
     fn permits_are_zero_when_the_limit_is_unknown() {
         assert_eq!(splice_permits(0), 0);
+    }
+
+    #[test]
+    fn override_replaces_the_heuristic_when_set_and_valid() {
+        assert_eq!(admission_capacity(Some("3"), 8_000), 3);
+    }
+
+    #[test]
+    fn override_of_zero_disables_splice_admission() {
+        assert_eq!(admission_capacity(Some("0"), 1_000_000), 0);
+    }
+
+    #[test]
+    fn unset_or_unparseable_override_falls_back_to_the_heuristic() {
+        assert_eq!(admission_capacity(None, 8_000), splice_permits(8_000));
+        assert_eq!(
+            admission_capacity(Some("not-a-number"), 8_000),
+            splice_permits(8_000)
+        );
     }
 
     #[test]

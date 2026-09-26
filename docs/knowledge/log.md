@@ -73,5 +73,23 @@
   (`splice::admission`, not keyed to any `Router`'s `max_connections`):
   splice may use at most half of `RLIMIT_NOFILE`, in units of 4 fds (one
   connection's two pipes), leaving the other half always available for
-  sockets, listeners, and anything else in the process. See
+  sockets, listeners, and anything else in the process.
+* **Update**: PR review on the splice change (#6) found three more issues,
+  fixed: (1) the fd budget's "half of `RLIMIT_NOFILE`" heuristic doesn't
+  know how much of that limit an embedder already holds elsewhere (e.g. a
+  large, fixed database-connection pool), so it could still admit more
+  splice connections than real headroom allows — added
+  `SNI_ROUTER_MAX_SPLICE_CONNECTIONS` to override the heuristic with an
+  explicit count (`0` disables splice); (2) the splice pipes were created
+  with `O_CLOEXEC` but not `O_NONBLOCK`, so a `splice(2)` call could block
+  the executor thread outright instead of yielding — fixed by requesting
+  both flags; (3) `copy_benchmark.rs`'s `unsafe { std::env::set_var(..) }`
+  justified itself by "no other task has started," which doesn't establish
+  thread-safety (the hazard is concurrent *threads*, not tasks) — fixed by
+  running that example on a current-thread runtime, where the claim is
+  actually true. A fourth review comment (claiming a semaphore permit
+  could drop before its splice `.await` completes) was investigated and
+  confirmed to be a false positive — Rust drops owned values at the end of
+  their lexical scope regardless of whether they're referenced again, not
+  at their last syntactic use — and left unchanged. See
   [connection lifecycle](delivery/connection-lifecycle.md).
