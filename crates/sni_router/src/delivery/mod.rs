@@ -22,6 +22,8 @@ mod metered;
 mod proxy;
 mod resolver;
 mod server;
+#[cfg(target_os = "linux")]
+mod splice;
 
 use std::time::Duration;
 
@@ -62,11 +64,15 @@ pub struct RouterConfig {
     /// thread until it returns, even after its connection gives up.
     pub max_concurrent_dns_lookups: usize,
     /// Size of each of the two copy buffers a proxied connection holds for
-    /// its lifetime. Larger buffers mean fewer syscalls per byte but more
-    /// memory per busy connection (2 × this; untouched pages of an idle
-    /// connection's buffers aren't resident). Measured on loopback, one
-    /// connection moved ~0.8 GiB/s at 8 KiB, ~1.5 at 16 KiB, and levelled
-    /// off at ~2.4–2.6 from 32 KiB up.
+    /// its lifetime (or, on Linux with `splice(2)` available, the size each
+    /// direction's in-kernel pipe is grown to). Larger buffers mean fewer
+    /// syscalls per byte but more memory per busy connection (2 × this;
+    /// untouched pages of an idle connection's buffers aren't resident).
+    /// Measured on loopback, one connection moved ~0.8 GiB/s at 8 KiB,
+    /// ~1.5 at 16 KiB, and levelled off at ~2.4–2.6 from 32 KiB up with the
+    /// userspace copy; `splice` moved a large payload at roughly 1.3–1.5×
+    /// that (`cargo run --release --example copy_benchmark --features
+    /// test-util`).
     pub copy_buffer_size: usize,
 }
 

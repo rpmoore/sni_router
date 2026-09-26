@@ -47,3 +47,62 @@
   incomplete hello — doesn't allocate at all in the common
   single/few-record, well-under-32-extensions case. See
   [ClientHello parsing](protocol/client-hello-parsing.md).
+* **Update**: Proxy stage now uses `splice(2)` through an in-kernel pipe on
+  Linux when the syscall probes as usable, so payload bytes never cross
+  into a userspace buffer; falls back to
+  `tokio::io::copy_bidirectional_with_sizes` elsewhere, if the probe fails
+  (e.g. seccomp), or if `SNI_ROUTER_DISABLE_SPLICE` is set. Measured
+  ~1.3–1.7× the userspace copy's loopback throughput
+  (`examples/copy_benchmark.rs`, kept in-tree for re-measuring). After
+  adversarial review: both directions' pipes are now built up front, before
+  either socket is touched, so a setup failure (fd exhaustion) falls back
+  instead of failing the connection; and client-read accounting moved to
+  the read side (matching `MeteredStream`), since counting it only after
+  the write to upstream succeeded under-counted bytes the client had
+  already sent when upstream stalled or reset. A second review round found
+  that admitting every connection to splice regardless of fd pressure could
+  still exhaust descriptors before any one connection's own `prepare()`
+  call failed (starving accept/connect instead). Fixed with a per-`Router`
+  fd budget (a semaphore sized once from `RLIMIT_NOFILE` and
+  `max_connections`): splice only runs while the budget has room. A third
+  review round then found that budget was computed independently per
+  `Router::serve` call from the *whole* process's `RLIMIT_NOFILE`, so two
+  concurrent `Router`s (a supported embedding scenario) would each admit up
+  to their own full share and together double-count the same fd limit.
+  Fixed by making it one semaphore for the whole process
+  (`splice::admission`, not keyed to any `Router`'s `max_connections`):
+  splice may use at most half of `RLIMIT_NOFILE`, in units of 4 fds (one
+  connection's two pipes), leaving the other half always available for
+  sockets, listeners, and anything else in the process.
+* **Update**: PR review on the splice change (#6) found three more issues,
+  fixed: (1) the fd budget's "half of `RLIMIT_NOFILE`" heuristic doesn't
+  know how much of that limit an embedder already holds elsewhere (e.g. a
+  large, fixed database-connection pool), so it could still admit more
+  splice connections than real headroom allows — added
+  `SNI_ROUTER_MAX_SPLICE_CONNECTIONS` to override the heuristic with an
+  explicit count (`0` disables splice); (2) the splice pipes were created
+  with `O_CLOEXEC` but not `O_NONBLOCK`, so a `splice(2)` call could block
+  the executor thread outright instead of yielding — fixed by requesting
+  both flags; (3) `copy_benchmark.rs`'s `unsafe { std::env::set_var(..) }`
+  justified itself by "no other task has started," which doesn't establish
+  thread-safety (the hazard is concurrent *threads*, not tasks) — fixed by
+  running each case on its own multi-thread runtime and fully dropping it
+  before mutating the env var, rather than forcing the whole benchmark
+  onto a current-thread runtime (which would have hidden splice's real
+  advantage, since the benchmark's own client/backend loops would lose
+  their parallelism too); dropping a multi-thread `Runtime` blocks until
+  every worker thread it spawned has exited (confirmed empirically via
+  `/proc/self/task` thread counts), so the gap between cases is genuinely
+  single-threaded. A fourth review comment (claiming a semaphore permit
+  could drop before its splice `.await` completes) was investigated and
+  confirmed to be a false positive — Rust drops owned values at the end of
+  their lexical scope regardless of whether they're referenced again, not
+  at their last syntactic use — and left unchanged.
+* **Update**: More PR review on #6: `Pipe`'s two ends were `AsyncFd<OwnedFd>`,
+  but `splice_direction` only ever awaits readiness on the *socket* side
+  (the pipe invariant means a splice into or out of it never blocks on the
+  pipe itself) — the reactor registration was pure per-connection overhead.
+  Changed to plain `OwnedFd`. Also fixed a stale `file:line` citation for
+  `idle_timeout`'s 30-minute default (pointed at `proxy.rs`, should point
+  at `RouterConfig` in `delivery/mod.rs`). See
+  [connection lifecycle](delivery/connection-lifecycle.md).

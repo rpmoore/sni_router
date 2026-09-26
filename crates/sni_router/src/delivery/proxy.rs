@@ -15,11 +15,11 @@
 use std::io;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::metered::Activity;
+use super::metered::{Activity, MeteredStream};
 
 /// Why proxying stopped.
 #[derive(Debug)]
@@ -34,30 +34,82 @@ pub(super) enum ProxyEnd {
 /// Splices `client` and `upstream` until both directions finish, either side
 /// errors, the connection idles out, or `force` fires.
 ///
-/// `copy_bidirectional` propagates half-close: when one side stops sending,
-/// the other side's write half is shut down while the reverse direction
-/// keeps flowing until it finishes too.
-pub(super) async fn proxy<C, U>(
-    client: &mut C,
-    upstream: &mut U,
+/// Propagates half-close: when one side stops sending, the other side's
+/// write half is shut down while the reverse direction keeps flowing until
+/// it finishes too. See [`copy`] for which copy mechanism that is.
+pub(super) async fn proxy(
+    client: &mut MeteredStream<TcpStream>,
+    upstream: &mut TcpStream,
     activity: Option<&Activity>,
     idle_timeout: Option<Duration>,
     buffer_size: usize,
     force: &CancellationToken,
-) -> ProxyEnd
-where
-    C: AsyncRead + AsyncWrite + Unpin,
-    U: AsyncRead + AsyncWrite + Unpin,
-{
+) -> ProxyEnd {
     tokio::select! {
         biased;
         _ = force.cancelled() => ProxyEnd::Forced,
         _ = idle_expired(activity, idle_timeout) => ProxyEnd::Idle,
-        result = tokio::io::copy_bidirectional_with_sizes(client, upstream, buffer_size, buffer_size) => match result {
-            Ok(_) => ProxyEnd::Finished,
+        result = copy(client, upstream, buffer_size, activity) => match result {
+            Ok(()) => ProxyEnd::Finished,
             Err(error) => ProxyEnd::Error(error),
         },
     }
+}
+
+/// On Linux, `splice(2)` through an in-kernel pipe (`super::splice`) when
+/// it's usable in this environment (`super::splice::available`) and the
+/// process-wide fd budget has room (`super::splice::admission`), falling
+/// back to the portable userspace copy otherwise, or if setting up its
+/// pipes fails (e.g. the process is out of file descriptors despite the
+/// budget check — `try_acquire` reserves capacity, it doesn't guarantee the
+/// kernel will grant it). That setup happens before either socket is
+/// touched, so falling back then never loses or double-counts a byte.
+/// Elsewhere, the userspace copy is the only option.
+#[cfg(target_os = "linux")]
+async fn copy(
+    client: &mut MeteredStream<TcpStream>,
+    upstream: &mut TcpStream,
+    buffer_size: usize,
+    activity: Option<&Activity>,
+) -> io::Result<()> {
+    if super::splice::available()
+        && let Some(permit) = super::splice::admission().try_acquire()
+    {
+        match super::splice::prepare(buffer_size) {
+            Ok(pipes) => {
+                return super::splice::copy_bidirectional(
+                    client.get_ref(),
+                    upstream,
+                    pipes,
+                    client.counters(),
+                    activity,
+                )
+                .await;
+            }
+            Err(error) => {
+                // Not using the reserved fds after all: release them
+                // immediately rather than holding them idle for the
+                // portable copy below, which doesn't need them.
+                drop(permit);
+                tracing::debug!(%error, "splice pipe setup failed, using the portable copy");
+            }
+        }
+    }
+    tokio::io::copy_bidirectional_with_sizes(client, upstream, buffer_size, buffer_size)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn copy(
+    client: &mut MeteredStream<TcpStream>,
+    upstream: &mut TcpStream,
+    buffer_size: usize,
+    _activity: Option<&Activity>,
+) -> io::Result<()> {
+    tokio::io::copy_bidirectional_with_sizes(client, upstream, buffer_size, buffer_size)
+        .await
+        .map(|_| ())
 }
 
 /// Resolves once no bytes have moved for `idle_timeout`; never resolves

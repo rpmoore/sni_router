@@ -62,15 +62,51 @@ Defaults come from `RouterConfig`
    [shutdown-and-limits](shutdown-and-limits.md).
 5. **Proxy**, bounded only by `idle_timeout`: 30 minutes by default,
    configurable, and `None` disables it
-   (`crates/sni_router/src/delivery/proxy.rs:40`). The default exists
+   (`crates/sni_router/src/delivery/mod.rs:47`, defaulted at `mod.rs:85`).
+   The default exists
    because, without it, idle TLS sessions to any routed host could hold
    every connection slot forever. It doesn't stop a client that keeps
    trickling bytes; per-client limits belong in front of the router.
-   `tokio::io::copy_bidirectional_with_sizes` propagates half-close: when
-   one side finishes sending, the other side's write half is shut down
-   while the reverse direction keeps flowing. It uses two buffers of
-   `copy_buffer_size` (default 32 KiB) for the life of the connection. The
-   idle watchdog (`crates/sni_router/src/delivery/proxy.rs:65`) closes the
+   The copy propagates half-close: when one side finishes sending, the
+   other side's write half is shut down while the reverse direction keeps
+   flowing. `copy` (`crates/sni_router/src/delivery/proxy.rs:69`) picks the
+   mechanism: on Linux, `splice(2)` through an in-kernel pipe
+   (`crates/sni_router/src/delivery/splice.rs:292`), when
+   `splice::available()` (`crates/sni_router/src/delivery/splice.rs:41`)
+   finds the syscall usable in this process *and* `splice::admission()`
+   (`crates/sni_router/src/delivery/splice.rs:149`) has fd budget left.
+   `admission()` is one semaphore for the whole process, shared by every
+   `Router::serve` call — sized once from `RLIMIT_NOFILE` alone, not from
+   any one `Router`'s `max_connections`, since an embedder may run several
+   `Router`s at once and a per-`Router` budget would double-count the same
+   process-wide fd limit across them. Each splice connection holds 4 extra
+   fds (two pipes), so at most half of `RLIMIT_NOFILE` is ever committed to
+   splice pipes (in units of 4); the other half is always available for
+   sockets, listeners, and anything else in the process — unless that
+   heuristic doesn't fit (e.g. an embedder already holds a large, fixed
+   share of the process's fds elsewhere), in which case
+   `SNI_ROUTER_MAX_SPLICE_CONNECTIONS` (`crates/sni_router/src/delivery/splice.rs:186`)
+   replaces it with an explicit connection count (`0` disables splice).
+   Both directions' pipes are then built by `splice::prepare` before either
+   socket is touched (`crates/sni_router/src/delivery/splice.rs:255`), so a
+   setup failure (fd budget reserved but the kernel still refuses, e.g. a
+   global limit) is always safe to answer by falling back — no byte has
+   been consumed yet. Once running, payload bytes never cross into
+   userspace at all. Every other OS, Linux when splice probes as
+   unavailable, the fd budget is exhausted, or setup fails, falls back to
+   `tokio::io::copy_bidirectional_with_sizes`, which copies through two
+   buffers of `copy_buffer_size` (default 32 KiB) held for the life of the
+   connection. The `SNI_ROUTER_DISABLE_SPLICE` env var forces the fallback,
+   e.g. to work around a kernel bug or A/B the two paths. Because the
+   splice path bypasses `MeteredStream`, it reports bytes to the same
+   counters directly (`crates/sni_router/src/delivery/metered.rs:122`) at
+   the same boundary `MeteredStream` uses — a client read counts as soon as
+   it's off the client socket, a client write as soon as it's landed there
+   — so byte accounting matches the portable copy even when a direction
+   fails partway. Measured on loopback (`cargo run --release --example
+   copy_benchmark --features test-util`), splice moved a 512 MiB payload at
+   roughly 1.3–1.7× the userspace copy's throughput.
+   The idle watchdog (`crates/sni_router/src/delivery/proxy.rs:99`) closes the
    connection after `idle_timeout` with no bytes in *either* direction.
    The idle clock restarts when proxying begins, so time spent on the
    lookup and the upstream connect never counts as idle.

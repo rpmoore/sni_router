@@ -69,6 +69,18 @@ impl ByteCounters {
             self.written.load(Ordering::Relaxed),
         )
     }
+
+    /// Records bytes read from the client. Used by the `splice(2)` fast
+    /// path, which bypasses `MeteredStream`'s `poll_read` entirely.
+    pub(super) fn add_read(&self, bytes: u64) {
+        self.read.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// Records bytes written to the client. Used by the `splice(2)` fast
+    /// path, which bypasses `MeteredStream`'s `poll_write` entirely.
+    pub(super) fn add_written(&self, bytes: u64) {
+        self.written.fetch_add(bytes, Ordering::Relaxed);
+    }
 }
 
 /// Wraps the client stream, from accept onward, to count bytes in each
@@ -95,6 +107,20 @@ impl<S> MeteredStream<S> {
         if let Some(activity) = &self.activity {
             activity.touch();
         }
+    }
+
+    /// The wrapped stream, for callers (the `splice(2)` fast path) that
+    /// need raw access and account for bytes themselves via [`counters`].
+    ///
+    /// [`counters`]: MeteredStream::counters
+    pub(super) fn get_ref(&self) -> &S {
+        &self.inner
+    }
+
+    /// The byte counters this stream feeds, for a caller doing its own
+    /// accounting instead of going through `poll_read`/`poll_write`.
+    pub(super) fn counters(&self) -> &ByteCounters {
+        &self.counters
     }
 }
 
