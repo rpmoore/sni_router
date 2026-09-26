@@ -62,7 +62,8 @@ Defaults come from `RouterConfig`
    [shutdown-and-limits](shutdown-and-limits.md).
 5. **Proxy**, bounded only by `idle_timeout`: 30 minutes by default,
    configurable, and `None` disables it
-   (`crates/sni_router/src/delivery/proxy.rs:24`). The default exists
+   (`crates/sni_router/src/delivery/mod.rs:47`, defaulted at `mod.rs:85`).
+   The default exists
    because, without it, idle TLS sessions to any routed host could hold
    every connection slot forever. It doesn't stop a client that keeps
    trickling bytes; per-client limits belong in front of the router.

@@ -97,5 +97,12 @@
   could drop before its splice `.await` completes) was investigated and
   confirmed to be a false positive — Rust drops owned values at the end of
   their lexical scope regardless of whether they're referenced again, not
-  at their last syntactic use — and left unchanged. See
+  at their last syntactic use — and left unchanged.
+* **Update**: More PR review on #6: `Pipe`'s two ends were `AsyncFd<OwnedFd>`,
+  but `splice_direction` only ever awaits readiness on the *socket* side
+  (the pipe invariant means a splice into or out of it never blocks on the
+  pipe itself) — the reactor registration was pure per-connection overhead.
+  Changed to plain `OwnedFd`. Also fixed a stale `file:line` citation for
+  `idle_timeout`'s 30-minute default (pointed at `proxy.rs`, should point
+  at `RouterConfig` in `delivery/mod.rs`). See
   [connection lifecycle](delivery/connection-lifecycle.md).

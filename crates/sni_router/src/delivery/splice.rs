@@ -24,7 +24,6 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, OnceLock};
 
 use tokio::io::Interest;
-use tokio::io::unix::AsyncFd;
 use tokio::net::TcpStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -89,41 +88,48 @@ fn raw_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 /// connection: a non-blocking anonymous pipe, grown to hold one full
 /// `buffer_size` chunk so a splice-in can never need more room than a
 /// splice-out has already made.
+///
+/// Plain `OwnedFd`s, not `AsyncFd`: readiness is always awaited on the
+/// *socket* side (`splice_direction`'s `src`/`dst`), never on the pipe —
+/// the invariant above means a splice into or out of this pipe never
+/// blocks on the pipe itself. Registering these fds with the reactor would
+/// only add per-connection setup/teardown cost for readiness this path
+/// never checks.
 pub(super) struct Pipe {
-    read: AsyncFd<OwnedFd>,
-    write: AsyncFd<OwnedFd>,
+    read: OwnedFd,
+    write: OwnedFd,
     capacity: usize,
 }
 
 impl Pipe {
     fn new(buffer_size: usize) -> io::Result<Self> {
-        let (read_fd, write_fd) = raw_pipe()?;
+        let (read, write) = raw_pipe()?;
         let requested = buffer_size.min(i32::MAX as usize) as i32;
         // Best effort: a splice-in is capped at this pipe's actual
         // capacity below, so an oversized request here only costs
         // throughput (more, smaller splice calls), never correctness. The
         // kernel may refuse or round up (e.g. `fs.pipe-max-size`).
-        // SAFETY: `write_fd` is open and valid for the duration of this
-        // call; `F_SETPIPE_SZ` takes an `int` argument, not a pointer.
-        unsafe { libc::fcntl(write_fd.as_raw_fd(), libc::F_SETPIPE_SZ, requested) };
+        // SAFETY: `write` is open and valid for the duration of this call;
+        // `F_SETPIPE_SZ` takes an `int` argument, not a pointer.
+        unsafe { libc::fcntl(write.as_raw_fd(), libc::F_SETPIPE_SZ, requested) };
         // SAFETY: same as above; `F_GETPIPE_SZ` takes no argument.
-        let capacity = match unsafe { libc::fcntl(write_fd.as_raw_fd(), libc::F_GETPIPE_SZ) } {
+        let capacity = match unsafe { libc::fcntl(write.as_raw_fd(), libc::F_GETPIPE_SZ) } {
             size if size > 0 => size as usize,
             _ => buffer_size,
         };
         Ok(Self {
-            read: AsyncFd::new(read_fd)?,
-            write: AsyncFd::new(write_fd)?,
+            read,
+            write,
             capacity,
         })
     }
 
     fn read_fd(&self) -> RawFd {
-        self.read.get_ref().as_raw_fd()
+        self.read.as_raw_fd()
     }
 
     fn write_fd(&self) -> RawFd {
-        self.write.get_ref().as_raw_fd()
+        self.write.as_raw_fd()
     }
 }
 
