@@ -53,7 +53,8 @@
   `tokio::io::copy_bidirectional_with_sizes` elsewhere, if the probe fails
   (e.g. seccomp), or if `SNI_ROUTER_DISABLE_SPLICE` is set. Measured
   ~1.3–1.7× the userspace copy's loopback throughput
-  (`examples/copy_benchmark.rs`, kept in-tree for re-measuring). After
+  (`crates/sni_router/examples/copy_benchmark.rs`, kept in-tree for
+  re-measuring). After
   adversarial review: both directions' pipes are now built up front, before
   either socket is touched, so a setup failure (fd exhaustion) falls back
   instead of failing the connection; and client-read accounting moved to

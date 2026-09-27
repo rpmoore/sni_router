@@ -27,7 +27,7 @@ gauge, with outcome `Aborted`.
 # Stages and deadlines
 
 Defaults come from `RouterConfig`
-(`crates/sni_router/src/delivery/mod.rs:73`).
+(`crates/sni_router/src/delivery/mod.rs:79`).
 
 1. **ClientHello**, `client_hello_timeout` (5s), one deadline for the
    whole hello, not per read
@@ -71,10 +71,11 @@ Defaults come from `RouterConfig`
    other side's write half is shut down while the reverse direction keeps
    flowing. `copy` (`crates/sni_router/src/delivery/proxy.rs:69`) picks the
    mechanism: on Linux, `splice(2)` through an in-kernel pipe
-   (`crates/sni_router/src/delivery/splice.rs:292`), when
-   `splice::available()` (`crates/sni_router/src/delivery/splice.rs:41`)
-   finds the syscall usable in this process *and* `splice::admission()`
-   (`crates/sni_router/src/delivery/splice.rs:149`) has fd budget left.
+   (`crates/sni_router/src/delivery/splice.rs:275`, where `splice_direction`
+   calls `splice_raw`), when `splice::available()`
+   (`crates/sni_router/src/delivery/splice.rs:40`) finds the syscall usable
+   in this process *and* `splice::admission()`
+   (`crates/sni_router/src/delivery/splice.rs:155`) has fd budget left.
    `admission()` is one semaphore for the whole process, shared by every
    `Router::serve` call — sized once from `RLIMIT_NOFILE` alone, not from
    any one `Router`'s `max_connections`, since an embedder may run several
@@ -85,10 +86,10 @@ Defaults come from `RouterConfig`
    sockets, listeners, and anything else in the process — unless that
    heuristic doesn't fit (e.g. an embedder already holds a large, fixed
    share of the process's fds elsewhere), in which case
-   `SNI_ROUTER_MAX_SPLICE_CONNECTIONS` (`crates/sni_router/src/delivery/splice.rs:186`)
+   `SNI_ROUTER_MAX_SPLICE_CONNECTIONS` (`crates/sni_router/src/delivery/splice.rs:192`)
    replaces it with an explicit connection count (`0` disables splice).
    Both directions' pipes are then built by `splice::prepare` before either
-   socket is touched (`crates/sni_router/src/delivery/splice.rs:255`), so a
+   socket is touched (`crates/sni_router/src/delivery/splice.rs:261`), so a
    setup failure (fd budget reserved but the kernel still refuses, e.g. a
    global limit) is always safe to answer by falling back — no byte has
    been consumed yet. Once running, payload bytes never cross into
@@ -106,7 +107,7 @@ Defaults come from `RouterConfig`
    fails partway. Measured on loopback (`cargo run --release --example
    copy_benchmark --features test-util`), splice moved a 512 MiB payload at
    roughly 1.3–1.7× the userspace copy's throughput.
-   The idle watchdog (`crates/sni_router/src/delivery/proxy.rs:99`) closes the
+   The idle watchdog (`crates/sni_router/src/delivery/proxy.rs:117`) closes the
    connection after `idle_timeout` with no bytes in *either* direction.
    The idle clock restarts when proxying begins, so time spent on the
    lookup and the upstream connect never counts as idle.
