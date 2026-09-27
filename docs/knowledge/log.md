@@ -105,5 +105,23 @@
   pipe itself) — the reactor registration was pure per-connection overhead.
   Changed to plain `OwnedFd`. Also fixed a stale `file:line` citation for
   `idle_timeout`'s 30-minute default (pointed at `proxy.rs`, should point
-  at `RouterConfig` in `delivery/mod.rs`). See
+  at `RouterConfig` in `delivery/mod.rs`).
+* **Update**: Re-verified every `crates/sni_router/src/delivery/*.rs`
+  citation in connection-lifecycle.md against current code after the
+  `AsyncFd` removal shifted line numbers again; fixed the ones that had
+  drifted (splice.rs's `available`/`admission`/`admission_capacity`/
+  `prepare`, mod.rs's `RouterConfig` defaults, proxy.rs's idle watchdog)
+  and corrected `log.md`'s `copy_benchmark.rs` path (was missing its crate
+  prefix).
+* **Update**: Further PR review on #6 found `splice_direction`'s drain loop
+  would spin forever if a `splice(2)` call ever returned `0` bytes while
+  more were still pending (impossible in correct operation, but silent on
+  the rare kernel/fd edge case) — now surfaces as an `io::ErrorKind::WriteZero`
+  error instead. Also switched `n as u64` byte-counting casts to checked
+  conversions (matching the pattern already used in `metered.rs`), and
+  added a Linux-only test (`copy_bidirectional_moves_both_ways_and_propagates_half_close`)
+  that calls `splice::copy_bidirectional` directly against two loopback
+  `TcpStream` pairs — bypassing `available()`/the fd-admission check — so
+  the splice syscalls themselves are always exercised regardless of the
+  test environment's fd headroom or `SNI_ROUTER_DISABLE_SPLICE`. See
   [connection lifecycle](delivery/connection-lifecycle.md).

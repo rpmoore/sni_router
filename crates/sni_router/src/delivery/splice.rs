@@ -302,6 +302,15 @@ async fn splice_direction(
                     splice_raw(pipe.read_fd(), dst.as_raw_fd(), remaining)
                 })
                 .await?;
+            if written == 0 {
+                // The pipe holds `remaining` bytes we just put there, so
+                // this can't be a real EOF; treat it as an error rather
+                // than spin forever re-issuing a zero-progress splice.
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "splice returned 0 with bytes still pending",
+                ));
+            }
             remaining -= written;
             on_written(written);
         }
@@ -338,7 +347,7 @@ pub(super) async fn copy_bidirectional(
         upstream,
         to_upstream_pipe,
         |n| {
-            counters.add_read(n as u64);
+            counters.add_read(u64::try_from(n).unwrap_or(u64::MAX));
             touch();
         },
         |_written| {},
@@ -349,7 +358,7 @@ pub(super) async fn copy_bidirectional(
         to_client_pipe,
         |_read| {},
         |n| {
-            counters.add_written(n as u64);
+            counters.add_written(u64::try_from(n).unwrap_or(u64::MAX));
             touch();
         },
     );
@@ -401,5 +410,61 @@ mod tests {
         // `Router`s) must share one budget, not each get their own slice of
         // `RLIMIT_NOFILE` — see `admission`'s doc comment.
         assert!(Arc::ptr_eq(&admission().permits, &admission().permits));
+    }
+
+    async fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (connected, accepted) =
+            tokio::join!(TcpStream::connect(addr), async { listener.accept().await });
+        (connected.unwrap(), accepted.unwrap().0)
+    }
+
+    /// Exercises `copy_bidirectional` directly — bypassing `available()`
+    /// and the fd-admission check `proxy.rs` gates the real path behind —
+    /// so this test's coverage of the splice syscalls themselves doesn't
+    /// depend on the environment splice happens to be enabled in.
+    #[tokio::test]
+    async fn copy_bidirectional_moves_both_ways_and_propagates_half_close() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut client_peer, router_client) = connected_pair().await;
+        let (router_upstream, mut upstream_peer) = connected_pair().await;
+        let counters = ByteCounters::default();
+        let pipes = prepare(4096).expect("pipe setup");
+
+        let client_payload = b"hello upstream, this is the client speaking";
+        let upstream_payload = b"and this is the upstream's reply";
+
+        let copy = copy_bidirectional(&router_client, &router_upstream, pipes, &counters, None);
+        let drive_client = async {
+            client_peer.write_all(client_payload).await.unwrap();
+            client_peer.shutdown().await.unwrap();
+            let mut received = Vec::new();
+            client_peer.read_to_end(&mut received).await.unwrap();
+            received
+        };
+        let drive_upstream = async {
+            let mut received = Vec::new();
+            upstream_peer.read_to_end(&mut received).await.unwrap();
+            assert_eq!(
+                received, client_payload,
+                "upstream must see the client's bytes unchanged, including EOF (half-close)"
+            );
+            upstream_peer.write_all(upstream_payload).await.unwrap();
+            upstream_peer.shutdown().await.unwrap();
+        };
+
+        let (copy_result, client_received, ()) = tokio::join!(copy, drive_client, drive_upstream);
+        copy_result.expect("copy_bidirectional should finish cleanly");
+        assert_eq!(
+            client_received, upstream_payload,
+            "client must see the upstream's reply unchanged"
+        );
+        assert_eq!(
+            counters.totals(),
+            (client_payload.len() as u64, upstream_payload.len() as u64),
+            "byte counters must match what each side actually sent"
+        );
     }
 }

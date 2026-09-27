@@ -93,7 +93,11 @@ Defaults come from `RouterConfig`
    setup failure (fd budget reserved but the kernel still refuses, e.g. a
    global limit) is always safe to answer by falling back — no byte has
    been consumed yet. Once running, payload bytes never cross into
-   userspace at all. Every other OS, Linux when splice probes as
+   userspace at all. A `splice(2)` call draining the pipe into its
+   destination that unexpectedly returns `0` (impossible in correct
+   operation, since the pipe holds bytes the loop just put there) surfaces
+   as an I/O error rather than spinning forever re-issuing a
+   zero-progress call. Every other OS, Linux when splice probes as
    unavailable, the fd budget is exhausted, or setup fails, falls back to
    `tokio::io::copy_bidirectional_with_sizes`, which copies through two
    buffers of `copy_buffer_size` (default 32 KiB) held for the life of the
