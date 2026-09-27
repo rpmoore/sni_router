@@ -123,5 +123,15 @@
   that calls `splice::copy_bidirectional` directly against two loopback
   `TcpStream` pairs — bypassing `available()`/the fd-admission check — so
   the splice syscalls themselves are always exercised regardless of the
-  test environment's fd headroom or `SNI_ROUTER_DISABLE_SPLICE`. See
-  [connection lifecycle](delivery/connection-lifecycle.md).
+  test environment's fd headroom or `SNI_ROUTER_DISABLE_SPLICE`.
+* **Update**: PR review on #6 caught that the raw `libc::write` (in the
+  availability probe), `libc::splice`, and `libc::shutdown` calls didn't
+  retry on `EINTR` — unlike `std::io`'s own wrappers, a raw syscall doesn't
+  get that for free, so a signal arriving mid-call could surface as a
+  spurious error (or, for the probe, wrongly and permanently cache
+  `available()` as false for the process). Added a shared `retry_eintr`
+  helper and used it at all three call sites. Re-verified splice.rs's
+  `file:line` citations in connection-lifecycle.md again, since this shifted
+  them (as it has each time splice.rs grows) — this recurring churn is a
+  known cost of citing exact lines in a file that's still being hardened.
+  See [connection lifecycle](delivery/connection-lifecycle.md).

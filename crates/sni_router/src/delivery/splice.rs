@@ -56,11 +56,17 @@ fn try_probe() -> io::Result<bool> {
     let (source_read, source_write) = raw_pipe()?;
     let (sink_read, sink_write) = raw_pipe()?;
     let byte = 0u8;
-    // SAFETY: `source_write` was just created by `pipe2` above and is open
-    // for writing; `&byte` is one valid, initialized byte.
-    if unsafe { libc::write(source_write.as_raw_fd(), (&byte as *const u8).cast(), 1) } != 1 {
-        return Err(io::Error::last_os_error());
-    }
+    retry_eintr(|| {
+        // SAFETY: `source_write` was just created by `pipe2` above and is
+        // open for writing; `&byte` is one valid, initialized byte.
+        let written =
+            unsafe { libc::write(source_write.as_raw_fd(), (&byte as *const u8).cast(), 1) };
+        if written == 1 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    })?;
     let moved = splice_raw(source_read.as_raw_fd(), sink_write.as_raw_fd(), 1)?;
     drop(sink_read);
     Ok(moved == 1)
@@ -212,46 +218,66 @@ fn nofile_soft_limit() -> Option<usize> {
     usize::try_from(limit.rlim_cur).ok()
 }
 
+/// Retries `syscall` while it fails with `EINTR`. A raw `libc` call doesn't
+/// get this handled for free the way `std::io`'s own wrappers do — a
+/// signal arriving mid-syscall must not become a spurious I/O error (or,
+/// for [`try_probe`], permanently and wrongly cache `available()` as
+/// false for the process).
+fn retry_eintr<T>(mut syscall: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match syscall() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
 /// Raw `splice(2)`: moves up to `len` bytes from `from` to `to`, at least
 /// one of which must be a pipe. Non-blocking; a `WouldBlock` result means
 /// the *other* endpoint (whichever holds the data or has the free space)
 /// isn't ready, and the caller must already know which one that is.
 fn splice_raw(from: RawFd, to: RawFd, len: usize) -> io::Result<usize> {
-    // SAFETY: `from` and `to` are valid, open file descriptors for the
-    // duration of this call; no user buffers are involved, only fds and a
-    // length, so there's nothing for the kernel to read or write out of
-    // bounds.
-    let moved = unsafe {
-        libc::splice(
-            from,
-            std::ptr::null_mut(),
-            to,
-            std::ptr::null_mut(),
-            len,
-            libc::SPLICE_F_MOVE | libc::SPLICE_F_NONBLOCK,
-        )
-    };
-    if moved < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(moved as usize)
+    retry_eintr(|| {
+        // SAFETY: `from` and `to` are valid, open file descriptors for the
+        // duration of this call; no user buffers are involved, only fds
+        // and a length, so there's nothing for the kernel to read or
+        // write out of bounds.
+        let moved = unsafe {
+            libc::splice(
+                from,
+                std::ptr::null_mut(),
+                to,
+                std::ptr::null_mut(),
+                len,
+                libc::SPLICE_F_MOVE | libc::SPLICE_F_NONBLOCK,
+            )
+        };
+        if moved < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(moved as usize)
+        }
+    })
 }
 
 /// Half of `shutdown(2)`: closes `stream`'s write side so the peer sees
 /// EOF, without touching the read side (the reverse direction may still be
 /// flowing).
 fn shutdown_write(stream: &TcpStream) -> io::Result<()> {
-    // SAFETY: `stream` is open and valid for the duration of this call.
-    if unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_WR) } != 0 {
-        let error = io::Error::last_os_error();
+    let result = retry_eintr(|| {
+        // SAFETY: `stream` is open and valid for the duration of this call.
+        if unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_WR) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    });
+    match result {
         // Already shut down, or the peer reset the connection: either way
         // there's nothing left to shut down.
-        if error.kind() == io::ErrorKind::NotConnected {
-            return Ok(());
-        }
-        return Err(error);
+        Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+        other => other,
     }
-    Ok(())
 }
 
 /// Builds both directions' pipes up front, before either socket is
