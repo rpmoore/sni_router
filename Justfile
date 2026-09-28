@@ -33,6 +33,21 @@ loadtest concurrency="50" duration="20" small_bytes="4096" large_bytes="1048576"
     set -euo pipefail
     trap 'kill $(jobs -p) 2>/dev/null || true; wait 2>/dev/null || true' EXIT
 
+    # A splice-admitted connection can cost the router process up to 6 fds
+    # (client socket, upstream socket, two pipes); a shell's default soft
+    # ulimit (often 1024) hits EMFILE well before --concurrency gets there.
+    # Raise the soft limit to the hard limit (no privilege needed) so a
+    # default shell doesn't fail immediately.
+    hard_limit=$(ulimit -Hn)
+    if [ "$hard_limit" != "unlimited" ]; then
+        ulimit -n "$hard_limit" 2>/dev/null || true
+    fi
+    soft_limit=$(ulimit -n)
+    needed=$(( {{concurrency}} * 6 + 16 ))
+    if [ "$soft_limit" != "unlimited" ] && [ "$soft_limit" -lt "$needed" ]; then
+        echo "warning: fd ulimit ($soft_limit) may be too low for --concurrency {{concurrency}} (worst case needs ~$needed); raise the hard limit (ulimit -Hn) or lower concurrency if you see 'Too many open files'" >&2
+    fi
+
     ./target/release/examples/load_backend --listen {{small_backend_addr}} --reply-bytes {{small_bytes}} &
     ./target/release/examples/load_backend --listen {{large_backend_addr}} --reply-bytes {{large_bytes}} &
     SNI_ROUTER_CONFIG=loadtest/router.toml ./target/release/sni_router &
