@@ -55,6 +55,15 @@ impl Class {
     }
 }
 
+impl Class {
+    fn expected_bytes(self, args: &Args) -> u64 {
+        match self {
+            Class::Small => args.small_bytes as u64,
+            Class::Large => args.large_bytes as u64,
+        }
+    }
+}
+
 struct Outcome {
     class: Class,
     elapsed: Duration,
@@ -77,7 +86,10 @@ async fn main() {
     // which worker happens to grab which sequence number.
     let sequence = Arc::new(AtomicU64::new(0));
     let large_ratio = args.large_ratio;
+    let small_bytes = Class::Small.expected_bytes(&args);
+    let large_bytes = Class::Large.expected_bytes(&args);
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
+    let run_start = Instant::now();
 
     let mut workers = Vec::with_capacity(args.concurrency);
     for _ in 0..args.concurrency {
@@ -92,12 +104,13 @@ async fn main() {
             while Instant::now() < deadline {
                 let i = sequence.fetch_add(1, Ordering::Relaxed) + 1;
                 let is_large = is_marked(i, large_ratio);
-                let (class, hello, payload) = if is_large {
-                    (Class::Large, &hello_large, &payload_large)
+                let (class, hello, payload, expected_bytes) = if is_large {
+                    (Class::Large, &hello_large, &payload_large, large_bytes)
                 } else {
-                    (Class::Small, &hello_small, &payload_small)
+                    (Class::Small, &hello_small, &payload_small, small_bytes)
                 };
-                outcomes.push(run_one(router, class, hello, payload).await);
+                outcomes
+                    .push(run_one(router, class, hello, payload, expected_bytes, deadline).await);
             }
             outcomes
         }));
@@ -108,7 +121,7 @@ async fn main() {
         outcomes.extend(worker.await.expect("worker task panicked"));
     }
 
-    report(&outcomes, args.duration_secs);
+    report(&outcomes, run_start.elapsed());
 }
 
 /// Whether request number `i` (1-based) falls on a mark spread evenly
@@ -117,9 +130,23 @@ fn is_marked(i: u64, ratio: f64) -> bool {
     (i as f64 * ratio).floor() > ((i - 1) as f64 * ratio).floor()
 }
 
-async fn run_one(router: SocketAddr, class: Class, hello: &[u8], payload: &[u8]) -> Outcome {
+async fn run_one(
+    router: SocketAddr,
+    class: Class,
+    hello: &[u8],
+    payload: &[u8],
+    expected_bytes: u64,
+    deadline: Instant,
+) -> Outcome {
     let start = Instant::now();
-    let result = timeout(PER_REQUEST_TIMEOUT, async {
+    // Cap this request's own timeout to whatever's left before `deadline`,
+    // so a request that starts near the end of the run can't itself run
+    // for up to `PER_REQUEST_TIMEOUT` past it.
+    let remaining = deadline.saturating_duration_since(start);
+    let per_request_timeout = PER_REQUEST_TIMEOUT
+        .min(remaining)
+        .max(Duration::from_millis(1));
+    let result = timeout(per_request_timeout, async {
         let mut stream = TcpStream::connect(router).await?;
         stream.write_all(hello).await?;
         stream.write_all(payload).await?;
@@ -129,11 +156,17 @@ async fn run_one(router: SocketAddr, class: Class, hello: &[u8], payload: &[u8])
     .await;
     let elapsed = start.elapsed();
     match result {
-        Ok(Ok(bytes_received)) => Outcome {
+        Ok(Ok(bytes_received)) if bytes_received == expected_bytes => Outcome {
             class,
             elapsed,
             bytes_received,
             ok: true,
+        },
+        Ok(Ok(bytes_received)) => Outcome {
+            class,
+            elapsed,
+            bytes_received,
+            ok: false,
         },
         _ => Outcome {
             class,
@@ -144,16 +177,16 @@ async fn run_one(router: SocketAddr, class: Class, hello: &[u8], payload: &[u8])
     }
 }
 
-fn report(outcomes: &[Outcome], duration_secs: u64) {
+fn report(outcomes: &[Outcome], elapsed: Duration) {
     println!("--- overall ---");
-    report_class(outcomes, None, duration_secs);
+    report_class(outcomes, None, elapsed);
     for class in [Class::Small, Class::Large] {
         println!("--- {} ---", class.sni());
-        report_class(outcomes, Some(class), duration_secs);
+        report_class(outcomes, Some(class), elapsed);
     }
 }
 
-fn report_class(outcomes: &[Outcome], class: Option<Class>, duration_secs: u64) {
+fn report_class(outcomes: &[Outcome], class: Option<Class>, elapsed: Duration) {
     let filtered: Vec<&Outcome> = outcomes
         .iter()
         .filter(|o| class.is_none_or(|c| o.class == c))
@@ -170,7 +203,7 @@ fn report_class(outcomes: &[Outcome], class: Option<Class>, duration_secs: u64) 
 
     println!(
         "requests={total} errors={errors} bytes={bytes} req_s={:.1}",
-        total as f64 / duration_secs as f64
+        total as f64 / elapsed.as_secs_f64()
     );
     if latencies.is_empty() {
         println!("latency: n/a (no successful requests)");
@@ -237,6 +270,7 @@ impl Args {
             (0.0..=1.0).contains(&large_ratio),
             "--large-ratio must be between 0 and 1"
         );
+        assert!(duration_secs > 0, "--duration must be greater than 0");
         Self {
             router,
             concurrency,

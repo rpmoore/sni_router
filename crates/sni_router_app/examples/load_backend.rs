@@ -40,10 +40,15 @@ async fn main() {
         args.listen, args.reply_bytes
     );
     loop {
-        let Ok((stream, _peer)) = listener.accept().await else {
-            continue;
-        };
-        tokio::spawn(serve(stream, Arc::clone(&reply)));
+        match listener.accept().await {
+            Ok((stream, _peer)) => {
+                tokio::spawn(serve(stream, Arc::clone(&reply)));
+            }
+            Err(error) => {
+                eprintln!("accept error: {error}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
     }
 }
 

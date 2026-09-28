@@ -31,10 +31,15 @@ loadtest concurrency="50" duration="20" small_bytes="4096" large_bytes="1048576"
     ./target/release/examples/load_backend --listen {{large_backend_addr}} --reply-bytes {{large_bytes}} &
     SNI_ROUTER_CONFIG=loadtest/router.toml ./target/release/sni_router &
 
+    healthy=false
     for _ in $(seq 1 50); do
-        curl -sf "http://{{admin_addr}}/health" >/dev/null 2>&1 && break
+        curl -sf "http://{{admin_addr}}/health" >/dev/null 2>&1 && { healthy=true; break; }
         sleep 0.1
     done
+    if [ "$healthy" != true ]; then
+        echo "router never became healthy at http://{{admin_addr}}/health" >&2
+        exit 1
+    fi
 
     ./target/release/examples/load_test \
         --router {{router_addr}} \
