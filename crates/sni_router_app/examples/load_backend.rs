@@ -63,8 +63,12 @@ async fn serve(mut stream: TcpStream, reply: Arc<Vec<u8>>) {
     let mut buf = [0u8; 64 * 1024];
     loop {
         match timeout(READ_TIMEOUT, stream.read(&mut buf)).await {
-            Ok(Ok(0)) | Ok(Err(_)) => break,
+            Ok(Ok(0)) => break,
             Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                eprintln!("connection read error: {error}, dropping it without a reply");
+                return;
+            }
             Err(_) => {
                 eprintln!("connection read timed out after {READ_TIMEOUT:?}, dropping it");
                 return;
