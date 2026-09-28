@@ -60,7 +60,7 @@ async fn main() {
 }
 
 async fn serve(mut stream: TcpStream, reply: Arc<Vec<u8>>) {
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = [0u8; 8 * 1024];
     loop {
         match timeout(READ_TIMEOUT, stream.read(&mut buf)).await {
             Ok(Ok(0)) => break,

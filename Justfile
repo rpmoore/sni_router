@@ -33,7 +33,7 @@ loadtest concurrency="50" duration="20" small_bytes="4096" large_bytes="1048576"
 
     healthy=false
     for _ in $(seq 1 50); do
-        curl -sf "http://{{admin_addr}}/health" >/dev/null 2>&1 && { healthy=true; break; }
+        curl -sf --connect-timeout 1 --max-time 2 "http://{{admin_addr}}/health" >/dev/null 2>&1 && { healthy=true; break; }
         sleep 0.1
     done
     if [ "$healthy" != true ]; then
