@@ -20,3 +20,4 @@ Wires the library to a TOML route file for the open-source deployment.
 ## Testing Expectations
 
 - Config validation and reload have unit tests; `tests/e2e_config_toml.rs` drives the app end to end (routing, health, golden metric names).
+- `examples/load_backend.rs` and `examples/load_test.rs` back the `just loadtest*` recipes (repo-root `Justfile`) — manual load testing of the real compiled binary, not part of `cargo test`.
