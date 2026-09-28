@@ -17,6 +17,12 @@ admin_addr := "127.0.0.1:18081"
 small_backend_addr := "127.0.0.1:19101"
 large_backend_addr := "127.0.0.1:19102"
 
+alias help := default
+
+# Lists all recipes (default when `just` is run with no arguments).
+default:
+    @just --list
+
 build:
     cargo build --release --locked -p sni_router_app --bins --examples
 
