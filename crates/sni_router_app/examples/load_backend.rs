@@ -24,9 +24,16 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
+
+/// Bounds the drain phase, so a client that connects but never sends and
+/// half-closes (a bug elsewhere, not real traffic) can't pin this task and
+/// its fd open forever.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() {
@@ -55,9 +62,13 @@ async fn main() {
 async fn serve(mut stream: TcpStream, reply: Arc<Vec<u8>>) {
     let mut buf = [0u8; 64 * 1024];
     loop {
-        match stream.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        match timeout(READ_TIMEOUT, stream.read(&mut buf)).await {
+            Ok(Ok(0)) | Ok(Err(_)) => break,
+            Ok(Ok(_)) => {}
+            Err(_) => {
+                eprintln!("connection read timed out after {READ_TIMEOUT:?}, dropping it");
+                return;
+            }
         }
     }
     let _ = stream.write_all(&reply).await;

@@ -18,7 +18,7 @@ small_backend_addr := "127.0.0.1:19101"
 large_backend_addr := "127.0.0.1:19102"
 
 build:
-    cargo build --release -p sni_router_app --bins --examples
+    cargo build --release --locked -p sni_router_app --bins --examples
 
 # Starts both toy backends and the real router, waits for /health, drives
 # load_test with the given parameters, then tears everything down.
