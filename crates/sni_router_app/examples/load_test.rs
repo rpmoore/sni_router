@@ -64,11 +64,26 @@ impl Class {
     }
 }
 
+/// Why a request didn't count as a clean success, so the report can tell
+/// "the run's own --duration cut this off" apart from "the router or
+/// backend actually misbehaved" without a debug-log dig.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Status {
+    Ok,
+    /// Hit its per-request deadline (routinely the run's own tail: the
+    /// deadline shrinks each request's own timeout as --duration runs out).
+    Timeout,
+    /// connect/write/read failed outright (reset, broken pipe, refused).
+    ConnectionError,
+    /// Closed cleanly, but the reply was the wrong size.
+    SizeMismatch,
+}
+
 struct Outcome {
     class: Class,
     elapsed: Duration,
     bytes_received: u64,
-    ok: bool,
+    status: Status,
 }
 
 #[tokio::main]
@@ -160,19 +175,25 @@ async fn run_one(
             class,
             elapsed,
             bytes_received,
-            ok: true,
+            status: Status::Ok,
         },
         Ok(Ok(bytes_received)) => Outcome {
             class,
             elapsed,
             bytes_received,
-            ok: false,
+            status: Status::SizeMismatch,
         },
-        _ => Outcome {
+        Ok(Err(_)) => Outcome {
             class,
             elapsed,
             bytes_received: 0,
-            ok: false,
+            status: Status::ConnectionError,
+        },
+        Err(_) => Outcome {
+            class,
+            elapsed,
+            bytes_received: 0,
+            status: Status::Timeout,
         },
     }
 }
@@ -192,17 +213,23 @@ fn report_class(outcomes: &[Outcome], class: Option<Class>, elapsed: Duration) {
         .filter(|o| class.is_none_or(|c| o.class == c))
         .collect();
     let total = filtered.len();
-    let errors = filtered.iter().filter(|o| !o.ok).count();
+    let count = |status: Status| filtered.iter().filter(|o| o.status == status).count();
+    let timeouts = count(Status::Timeout);
+    let connection_errors = count(Status::ConnectionError);
+    let size_mismatches = count(Status::SizeMismatch);
+    let errors = timeouts + connection_errors + size_mismatches;
     let bytes: u64 = filtered.iter().map(|o| o.bytes_received).sum();
     let mut latencies: Vec<Duration> = filtered
         .iter()
-        .filter(|o| o.ok)
+        .filter(|o| o.status == Status::Ok)
         .map(|o| o.elapsed)
         .collect();
     latencies.sort_unstable();
 
+    let mib_s = bytes as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
     println!(
-        "requests={total} errors={errors} bytes={bytes} req_s={:.1}",
+        "requests={total} errors={errors} (timeout={timeouts} connection_error={connection_errors} \
+         size_mismatch={size_mismatches}) bytes={bytes} req_s={:.1} throughput={mib_s:.1}MiB/s",
         total as f64 / elapsed.as_secs_f64()
     );
     if latencies.is_empty() {
