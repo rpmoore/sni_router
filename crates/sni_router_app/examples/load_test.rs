@@ -106,15 +106,28 @@ async fn main() {
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
     let run_start = Instant::now();
 
+    // Spreading every worker's first connection over a short window instead
+    // of firing all of them in the same instant avoids a startup thundering
+    // herd: with everything (router, both toy backends, and this process)
+    // cold-starting at once, a synchronized burst of --concurrency
+    // connections can transiently overwhelm scheduling, producing a
+    // handful of spurious resets in the first ~1s that have nothing to do
+    // with steady-state behavior. Staggered by worker index, not randomly,
+    // so a run stays reproducible.
+    let startup_jitter_window =
+        Duration::from_millis((args.duration_secs * 1000 / 4).clamp(1, 1000));
+
     let mut workers = Vec::with_capacity(args.concurrency);
-    for _ in 0..args.concurrency {
+    for worker_index in 0..args.concurrency {
         let sequence = Arc::clone(&sequence);
         let hello_small = Arc::clone(&hello_small);
         let hello_large = Arc::clone(&hello_large);
         let payload_small = Arc::clone(&payload_small);
         let payload_large = Arc::clone(&payload_large);
         let router = args.router;
+        let stagger = startup_jitter_window * worker_index as u32 / args.concurrency as u32;
         workers.push(tokio::spawn(async move {
+            tokio::time::sleep(stagger).await;
             let mut outcomes = Vec::new();
             while Instant::now() < deadline {
                 let i = sequence.fetch_add(1, Ordering::Relaxed) + 1;
