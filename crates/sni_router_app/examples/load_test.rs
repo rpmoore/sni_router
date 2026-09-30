@@ -64,11 +64,26 @@ impl Class {
     }
 }
 
+/// Why a request didn't count as a clean success, so the report can tell
+/// "the run's own --duration cut this off" apart from "the router or
+/// backend actually misbehaved" without a debug-log dig.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Status {
+    Ok,
+    /// Hit its per-request deadline (routinely the run's own tail: the
+    /// deadline shrinks each request's own timeout as --duration runs out).
+    Timeout,
+    /// connect/write/read failed outright (reset, broken pipe, refused).
+    ConnectionError,
+    /// Closed cleanly, but the reply was the wrong size.
+    SizeMismatch,
+}
+
 struct Outcome {
     class: Class,
     elapsed: Duration,
     bytes_received: u64,
-    ok: bool,
+    status: Status,
 }
 
 #[tokio::main]
@@ -91,15 +106,28 @@ async fn main() {
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
     let run_start = Instant::now();
 
+    // Spreading every worker's first connection over a short window instead
+    // of firing all of them in the same instant avoids a startup thundering
+    // herd: with everything (router, both toy backends, and this process)
+    // cold-starting at once, a synchronized burst of --concurrency
+    // connections can transiently overwhelm scheduling, producing a
+    // handful of spurious resets in the first ~1s that have nothing to do
+    // with steady-state behavior. Staggered by worker index, not randomly,
+    // so a run stays reproducible.
+    let startup_jitter_window =
+        Duration::from_millis((args.duration_secs * 1000 / 4).clamp(1, 1000));
+
     let mut workers = Vec::with_capacity(args.concurrency);
-    for _ in 0..args.concurrency {
+    for worker_index in 0..args.concurrency {
         let sequence = Arc::clone(&sequence);
         let hello_small = Arc::clone(&hello_small);
         let hello_large = Arc::clone(&hello_large);
         let payload_small = Arc::clone(&payload_small);
         let payload_large = Arc::clone(&payload_large);
         let router = args.router;
+        let stagger = startup_jitter_window * worker_index as u32 / args.concurrency as u32;
         workers.push(tokio::spawn(async move {
+            tokio::time::sleep(stagger).await;
             let mut outcomes = Vec::new();
             while Instant::now() < deadline {
                 let i = sequence.fetch_add(1, Ordering::Relaxed) + 1;
@@ -160,19 +188,25 @@ async fn run_one(
             class,
             elapsed,
             bytes_received,
-            ok: true,
+            status: Status::Ok,
         },
         Ok(Ok(bytes_received)) => Outcome {
             class,
             elapsed,
             bytes_received,
-            ok: false,
+            status: Status::SizeMismatch,
         },
-        _ => Outcome {
+        Ok(Err(_)) => Outcome {
             class,
             elapsed,
             bytes_received: 0,
-            ok: false,
+            status: Status::ConnectionError,
+        },
+        Err(_) => Outcome {
+            class,
+            elapsed,
+            bytes_received: 0,
+            status: Status::Timeout,
         },
     }
 }
@@ -192,17 +226,23 @@ fn report_class(outcomes: &[Outcome], class: Option<Class>, elapsed: Duration) {
         .filter(|o| class.is_none_or(|c| o.class == c))
         .collect();
     let total = filtered.len();
-    let errors = filtered.iter().filter(|o| !o.ok).count();
+    let count = |status: Status| filtered.iter().filter(|o| o.status == status).count();
+    let timeouts = count(Status::Timeout);
+    let connection_errors = count(Status::ConnectionError);
+    let size_mismatches = count(Status::SizeMismatch);
+    let errors = timeouts + connection_errors + size_mismatches;
     let bytes: u64 = filtered.iter().map(|o| o.bytes_received).sum();
     let mut latencies: Vec<Duration> = filtered
         .iter()
-        .filter(|o| o.ok)
+        .filter(|o| o.status == Status::Ok)
         .map(|o| o.elapsed)
         .collect();
     latencies.sort_unstable();
 
+    let mib_s = bytes as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
     println!(
-        "requests={total} errors={errors} bytes={bytes} req_s={:.1}",
+        "requests={total} errors={errors} (timeout={timeouts} connection_error={connection_errors} \
+         size_mismatch={size_mismatches}) bytes={bytes} req_s={:.1} throughput={mib_s:.1}MiB/s",
         total as f64 / elapsed.as_secs_f64()
     );
     if latencies.is_empty() {
